@@ -172,14 +172,24 @@ def build_legal_action_mask(state: GameState, agent: str) -> np.ndarray:
             for seat in range(NUM_SEAT_SLOTS):
                 target = state.agent_by_seat(seat)
                 if target and target != agent and state.players[target].alive:
+                    # prevent duplicate LE on same target
+                    if any(cid == 10 for cid,_ in state.players[target].judgement_zone):
+                        continue
                     mask[action_index_for_targeted(INDEX_LE_BASE, seat)] = 1
         if any_card_named(state, me, "bingliang"):
             for seat in range(NUM_SEAT_SLOTS):
                 target = state.agent_by_seat(seat)
                 if target and target != agent and state.players[target].alive:
+                    if not in_distance_one(state, agent, target):
+                        continue
+                    # prevent duplicate BL on same target
+                    if any(cid == 11 for cid,_ in state.players[target].judgement_zone):
+                        continue
                     mask[action_index_for_targeted(INDEX_BINGLIANG_BASE, seat)] = 1
         if any_card_named(state, me, "shandian"):
-            mask[INDEX_SHANDIAN] = 1
+            # only allow if self has no shandian pending
+            if not any(cid == 12 for cid,_ in me.judgement_zone):
+                mask[INDEX_SHANDIAN] = 1
         # Equip actions
         if any_card_named(state, me, "crossbow"):
             mask[INDEX_EQUIP_WEAPON] = 1

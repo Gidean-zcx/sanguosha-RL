@@ -750,7 +750,8 @@ class SgsAecEnv(AECEnv):
                 # pass to next alive
                 next_idx = (state.current_agent_idx + 1) % len(state.agent_order)
                 next_agent = state.agent_order[next_idx]
-                state.players[next_agent].judgement_zone.append((12, 0))
+                if not any(cid == 12 for cid,_ in state.players[next_agent].judgement_zone):
+                    state.players[next_agent].judgement_zone.append((12, 0))
             state.discard_pile.append((judge[0], judge[1]))
 
     def _apply_hit_damage(self, attacker: str, defender: str, base_dmg: int, events: List[Dict], tag: str):
@@ -820,3 +821,16 @@ class SgsAecEnv(AECEnv):
                 "ignore_armor": False,
             }
             events.append({"type": "qinglong_extra_sha", "attacker": attacker, "defender": defender})
+
+    def _distance_one(self, a: str, b: str) -> bool:
+        a_seat = self.state.players[a].seat
+        b_seat = self.state.players[b].seat
+        n = len(self.state.agent_order)
+        cw = (b_seat - a_seat) % n
+        ccw = (a_seat - b_seat) % n
+        dist = min(cw, ccw)
+        if self.state.players[a].equip_minus_horse:
+            dist = max(1, dist - 1)
+        if self.state.players[b].equip_plus_horse:
+            dist = dist + 1
+        return dist <= 1
