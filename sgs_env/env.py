@@ -744,6 +744,23 @@ class SgsAecEnv(AECEnv):
                 card = dp.hand.pop(0)
                 self.state.discard_pile.append(card)
                 events.append({"type": "hanbing_discard", "agent": defender})
+            # damage triggers (defender)
+            if dp.hero == "caocao":
+                # jianxiong: draw 1
+                self._draw_cards(self.state, defender, 1)
+                events.append({"type": "skill", "name": "jianxiong", "agent": defender})
+            if dp.hero == "simayi" and ap.hand:
+                # fankui: obtain 1 from attacker
+                card = ap.hand.pop(0)
+                dp.hand.append(card)
+                events.append({"type": "skill", "name": "fankui", "from": attacker, "to": defender})
+            if dp.hero == "xiahoudun" and tag.startswith("sha"):
+                judge = self._draw_judge_card()
+                if judge is not None and judge[1] in (1, 3):  # red
+                    ap.hp -= 1
+                    events.append({"type": "skill", "name": "ganglie", "by": defender, "to": attacker, "dmg": 1})
+                    if ap.hp <= 0:
+                        self.state.dying_pending = {"agent": attacker}
             if dp.hp <= 0:
                 self.state.dying_pending = {"agent": defender}
         else:
