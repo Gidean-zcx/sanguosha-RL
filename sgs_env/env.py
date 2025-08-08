@@ -142,14 +142,9 @@ class SgsAecEnv(AECEnv):
     # Core game flow
     def _init_game_state(self, rng: GameRNG) -> GameState:
         state = GameState(config=self.config, rng=rng)
-        # Build a small deck: 1..3 cards repeated
-        suits = [0, 1, 2, 3]
-        deck: List[Tuple[int, int]] = []
-        for _ in range(30):
-            cid = rng.rng.integers(1, 4)
-            s = int(rng.rng.choice(suits))
-            deck.append((int(cid), s))
-        rng.rng.shuffle(deck)
+        # Build a standard-like deck with suits and ranks
+        from .cards import build_standard_deck
+        deck: List[Tuple[int, int, int]] = build_standard_deck(rng.rng, size=108)
         state.deck = deck
 
         # Assign roles in 4P: LORD, REBEL, REBEL, LOYALIST
@@ -179,8 +174,8 @@ class SgsAecEnv(AECEnv):
         for _ in range(n):
             if not state.deck:
                 break
-            card = state.deck.pop()  # (cid, suit)
-            state.players[agent].hand.append(card)
+            card = state.deck.pop()  # (cid, suit, rank)
+            state.players[agent].hand.append((card[0], card[1]))  # store (cid, suit) in hand
 
     def _advance_with_action(self, agent: str, action: int, events: List[Dict]):
         state = self.state
@@ -373,10 +368,9 @@ class SgsAecEnv(AECEnv):
 
         # Wuxie chain (simplified, single cancel offer sequentially)
         if state.response_pending and state.response_pending.get("type") == "wuxie" and state.response_pending.get("current") == agent:
-            if action == INDEX_RESP_WUXIE and self._consume_first_named_card(me, name="wuxie"):
-                state.response_pending["canceled"] = True
-                events.append({"type": "respond", "card": "wuxie", "agent": agent})
-            # advance to next candidate or resolve
+            if self._handle_wuxie_response(agent, action, events):
+                return
+            # even if not responded, still advance
             self._advance_wuxie_or_resolve(events)
             return
 
@@ -461,7 +455,7 @@ class SgsAecEnv(AECEnv):
     def _draw_judge_card(self):
         if not self.state.deck:
             return None
-        return self.state.deck.pop()
+        return self.state.deck.pop()  # (cid, suit, rank)
 
     def _update_all_infos(self, extra_events: Optional[List[Dict]] = None):
         for agent in self.agents:
@@ -522,16 +516,19 @@ class SgsAecEnv(AECEnv):
             return
 
     def _start_wuxie_chain(self, payload: Dict, events: List[Dict]):
-        # offer wuxie starting from next player clockwise
+        # Start a nested-capable Wuxie chain using a stack of pending asks
         state = self.state
         caster = payload.get("caster", payload.get("attacker"))
         start_idx = (state.current_agent_idx + 1) % len(state.agent_order)
         state.response_pending = {
             "type": "wuxie",
-            "payload": payload,
-            "current": state.agent_order[start_idx],
-            "start_idx": start_idx,
-            "canceled": False,
+            "stack": [
+                {
+                    "payload": payload,
+                    "ask_idx": start_idx,
+                    "canceled": False,
+                }
+            ],
         }
         events.append({"type": "play", "card": payload.get("effect"), "agent": caster, "target": payload.get("defender")})
 
@@ -540,20 +537,42 @@ class SgsAecEnv(AECEnv):
         rp = state.response_pending
         if rp is None or rp.get("type") != "wuxie":
             return
-        if rp.get("canceled"):
-            # canceled, clear and done
-            state.response_pending = None
-            events.append({"type": "canceled", "by": "wuxie"})
+        stack = rp.get("stack", [])
+        if not stack:
             return
-        # move to next candidate or resolve
-        next_idx = (rp["start_idx"] + 1) % len(state.agent_order)
-        rp["start_idx"] = next_idx
+        frame = stack[-1]
+        ask_idx = frame["ask_idx"]
+        next_idx = (ask_idx + 1) % len(state.agent_order)
+        frame["ask_idx"] = next_idx
         rp["current"] = state.agent_order[next_idx]
         if next_idx == state.current_agent_idx:
-            # back to caster, resolve effect
-            payload = rp.get("payload")
-            state.response_pending = None
-            self._resolve_effect(payload, events)
+            # resolve top frame
+            payload = frame["payload"]
+            canceled = frame["canceled"]
+            stack.pop()
+            if not canceled:
+                self._resolve_effect(payload, events)
+            # if still frames remain, continue asking from their ask_idx; else clear
+            if not stack:
+                state.response_pending = None
+
+    def _handle_wuxie_response(self, agent: str, action: int, events: List[Dict]) -> bool:
+        state = self.state
+        rp = state.response_pending
+        if rp is None or rp.get("type") != "wuxie":
+            return False
+        frame = rp["stack"][-1]
+        if action == INDEX_RESP_WUXIE and self._consume_first_named_card(self.state.players[agent], name="wuxie"):
+            # playing Wuxie on current effect -> toggle canceled or uncanceled depending on parity
+            # Parity rule: first Wuxie cancels, second re-enables, third cancels, ...
+            frame["canceled"] = not frame.get("canceled", False)
+            # push a new frame to allow counter-wuxie on this wuxie
+            start_idx = (self.state.agent_name_mapping[agent] + 1) % len(self.state.agent_order)
+            rp["stack"].append({"payload": {"effect": "wuxie"}, "ask_idx": start_idx, "canceled": False})
+            events.append({"type": "respond", "card": "wuxie", "agent": agent})
+        # advance asking for current top frame
+        self._advance_wuxie_or_resolve(events)
+        return True
 
     def _resolve_effect(self, payload: Dict, events: List[Dict]):
         eff = payload.get("effect")
@@ -642,27 +661,25 @@ class SgsAecEnv(AECEnv):
             return
         judge = state.deck.pop()
         suit_val = judge[1]
-        # 0 spade,1 heart,2 club,3 diamond in our simplified deck
+        rank_val = judge[2]
+        # 0 spade,1 heart,2 club,3 diamond
         if cid == 10:  # le: skip play if not heart
             if suit_val != 1:
                 events.append({"type": "judge", "card": "le", "result": "bad"})
-                # mark skip play
-                p.judgement_zone.append((cid, 0))  # le persists normally; for MVP we keep then remove
-                state.current_phase = Phase.DISCARD  # directly skip to discard
+                state.current_phase = Phase.DISCARD
             else:
                 events.append({"type": "judge", "card": "le", "result": "ok"})
+            # judge to discard
+            state.discard_pile.append((judge[0], judge[1]))
         elif cid == 11:  # bingliang: skip draw if not club
             if suit_val != 2:
                 events.append({"type": "judge", "card": "bingliang", "result": "bad"})
-                # mark skip draw next
-                # For MVP, we will set a flag to skip draw once
                 setattr(p, "skip_draw_once", True)
             else:
                 events.append({"type": "judge", "card": "bingliang", "result": "ok"})
+            state.discard_pile.append((judge[0], judge[1]))
         elif cid == 12:  # shandian
-            # spade 2-9 -> 3 damage
-            is_spade_2_9 = (suit_val == 0) and True  # we don't have ranks; approximate 50% chance
-            if is_spade_2_9:
+            if suit_val == 0 and 2 <= rank_val <= 9:
                 p.hp -= 3
                 events.append({"type": "judge", "card": "shandian", "result": "hit", "dmg": 3})
                 if p.hp <= 0:
@@ -673,3 +690,4 @@ class SgsAecEnv(AECEnv):
                 next_idx = (state.current_agent_idx + 1) % len(state.agent_order)
                 next_agent = state.agent_order[next_idx]
                 state.players[next_agent].judgement_zone.append((12, 0))
+            state.discard_pile.append((judge[0], judge[1]))

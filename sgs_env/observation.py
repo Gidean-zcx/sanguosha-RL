@@ -188,26 +188,7 @@ def any_red_card(me: PlayerState) -> bool:
     return False
 
 
-_CARD_ID_TO_NAME = {
-    1: "sha",
-    2: "shan",
-    3: "tao",
-    4: "juedou",
-    5: "guohe",
-    6: "shunshou",
-    7: "nanman",
-    8: "wanjian",
-    9: "wuxie",
-    10: "le",
-    11: "bingliang",
-    12: "shandian",
-    13: "crossbow",
-    14: "bagua",
-    15: "renwang",
-    16: "minus_horse",
-    17: "plus_horse",
-}
-
+from .cards import CARD_ID_TO_NAME as _CARD_ID_TO_NAME
 
 def card_name(card_id: int) -> str:
     return _CARD_ID_TO_NAME.get(card_id, f"unknown:{card_id}")
