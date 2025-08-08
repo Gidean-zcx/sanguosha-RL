@@ -282,6 +282,8 @@ class SgsAecEnv(AECEnv):
                 attacker = state.response_pending.get("attacker")
                 events.append({"type": "hit", "by": attacker, "agent": agent, "dmg": 1})
                 me.hp -= 1
+                # track last damage source
+                setattr(self.state.players[agent], "last_damage_by", attacker)
                 state.response_pending = None
                 if me.hp <= 0:
                     state.dying_pending = {"agent": agent}
@@ -308,6 +310,7 @@ class SgsAecEnv(AECEnv):
                 opp = state.response_pending.get("opponent")
                 me.hp -= 1
                 events.append({"type": "duel_hit", "by": opp, "agent": agent, "dmg": 1})
+                setattr(self.state.players[agent], "last_damage_by", opp)
                 state.response_pending = None
                 if me.hp <= 0:
                     state.dying_pending = {"agent": agent}
@@ -340,6 +343,8 @@ class SgsAecEnv(AECEnv):
                 # cannot play TAO => death
                 me.alive = False
                 events.append({"type": "death", "agent": agent})
+                # identity rewards/penalties
+                self._apply_identity_rewards(agent, events)
                 state.dying_pending = None
                 self._check_termination_after_death(events)
                 return
@@ -364,21 +369,52 @@ class SgsAecEnv(AECEnv):
                 "observation_struct": obs_struct,  # full struct for API/UI
             }
 
+    def _apply_identity_rewards(self, dead_agent: str, events: List[Dict]):
+        state = self.state
+        dead_role = state.players[dead_agent].role
+        killer = getattr(state.players[dead_agent], "last_damage_by", None)
+        if killer is None:
+            return
+        if killer not in state.players:
+            return
+        killer_role = state.players[killer].role
+        # 杀反摸3：击杀反贼者摸3
+        if dead_role.value == "rebel":
+            self._draw_cards(state, killer, 3)
+            events.append({"type": "reward", "to": killer, "what": "draw3_on_kill_rebel"})
+        # 主杀忠：主公若击杀忠臣，弃所有牌
+        if killer_role.value == "lord" and dead_role.value == "loyalist":
+            p = state.players[killer]
+            while p.hand:
+                card = p.hand.pop()
+                state.discard_pile.append(card)
+            events.append({"type": "penalty", "to": killer, "what": "lord_killed_loyalist_discard_all"})
+
     def _check_termination_after_death(self, events: List[Dict]):
-        # Simplified victory: if only one side alive or lord dead -> terminate
-        alive_agents = [a for a, p in self.state.players.items() if p.alive]
-        if len(alive_agents) <= 1:
+        # Identity victory checks
+        alive = {a: p for a, p in self.state.players.items() if p.alive}
+        roles_alive = {a: p.role.value for a, p in alive.items()}
+        # if lord dead
+        lord_alive = any(p.role.value == "lord" and p.alive for p in self.state.players.values())
+        if not lord_alive:
+            rebels_alive = any(p.role.value == "rebel" and p.alive for p in self.state.players.values())
+            if rebels_alive:
+                reason = "rebels_win_lord_dead"
+            else:
+                # if only renegade remains alive -> renegade wins
+                ren_only = all((p.role.value == "renegade") for p in alive.values()) and len(alive) == 1
+                reason = "renegade_win" if ren_only else "rebels_win_lord_dead"
             for a in self.agents:
                 self.terminations[a] = True
-            events.append({"type": "game_over", "reason": "last_man"})
+            events.append({"type": "game_over", "reason": reason})
             return
-        # lord dead => rebels win (MVP simplification)
-        for a, p in self.state.players.items():
-            if p.role.value == "lord" and not p.alive:
-                for aa in self.agents:
-                    self.terminations[aa] = True
-                events.append({"type": "game_over", "reason": "lord_dead"})
-                return
+        # if all rebels and renegades dead -> lord & loyalists win
+        rebels_or_renegades_alive = any(p.role.value in ("rebel", "renegade") and p.alive for p in self.state.players.values())
+        if not rebels_or_renegades_alive:
+            for a in self.agents:
+                self.terminations[a] = True
+            events.append({"type": "game_over", "reason": "lord_side_win"})
+            return
 
     def _start_wuxie_chain(self, payload: Dict, events: List[Dict]):
         # offer wuxie starting from next player clockwise
