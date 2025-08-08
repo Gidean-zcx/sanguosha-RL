@@ -186,6 +186,22 @@ class SgsAecEnv(AECEnv):
         phase = state.current_phase
         me = state.players[agent]
 
+        # Dying window should preempt phases
+        if state.dying_pending and agent == state.dying_pending.get("agent"):
+            if action == INDEX_TAO and self._consume_first_named_card_return(me, name="tao"):
+                me.hp += 1
+                events.append({"type": "rescue", "card": "tao", "agent": agent})
+                if me.hp > 0:
+                    state.dying_pending = None
+                return
+            else:
+                me.alive = False
+                events.append({"type": "death", "agent": agent})
+                # identity rewards/penalties
+                self._apply_identity_rewards(agent, events)
+                state.dying_pending = None
+                self._check_termination_after_death(events)
+                return
         if phase == Phase.PREPARE:
             events.append({"type": "phase", "phase": Phase.PREPARE.value, "agent": agent})
             # resolve delayed tools LIFO
