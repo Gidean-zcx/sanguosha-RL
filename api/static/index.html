@@ -14,6 +14,7 @@
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .card { padding: 8px; border: 1px solid #e5e5e5; border-radius: 8px; }
     .pill { padding: 2px 6px; background: #eef; border-radius: 10px; margin-right: 4px; display: inline-block; }
+    ul { padding-left: 18px; }
   </style>
 </head>
 <body>
@@ -28,6 +29,8 @@
     <div class="card">
       <div><b>当前出手</b>: <span id="agent">-</span>，<b>阶段</b>: <span id="phase">-</span></div>
       <div id="seating"></div>
+      <div style="margin-top:6px"><b>公开信息</b>:</div>
+      <ul id="public"></ul>
       <div style="margin-top:6px"><b>可选目标</b>: <span id="targets"></span></div>
       <div style="margin-top:6px"><b>动作掩码</b>:</div>
       <div id="mask"></div>
@@ -82,6 +85,19 @@ function targetSpan(t){
 function renderSeating(arr){ const c=el('seating'); c.innerHTML=''; (arr||[]).forEach(a=>c.appendChild(seatSpan(a))); }
 function renderTargets(arr){ const c=el('targets'); c.innerHTML=''; (arr||[]).forEach(t=>c.appendChild(targetSpan(t))); }
 
+function renderPublic(obs){
+  const list = el('public'); list.innerHTML='';
+  const pub = obs && obs.public ? obs.public : null;
+  if(!pub) return;
+  const players = pub.players || {};
+  const entries = Object.entries(players).sort((a,b)=> (a[1].seat||0)-(b[1].seat||0));
+  entries.forEach(([aid,p])=>{
+    const li = document.createElement('li');
+    li.textContent = `${aid}@${p.seat} hp ${p.hp}/${p.max_hp} hand ${p.hand_size} range ${p.equip.weapon_range} -1 ${p.equip.minus_horse} +1 ${p.equip.plus_horse} judge ${p.judgement_zone_size}`;
+    list.appendChild(li);
+  });
+}
+
 function renderSelf(obs){
   const me = obs && obs.self ? obs.self : null;
   const h = el('hand'); h.innerHTML='';
@@ -115,6 +131,7 @@ el('connect').onclick = ()=>{
     renderMask(msg.info.mask);
     renderSeating(msg.info.seating);
     renderTargets(msg.info.targets);
+    renderPublic(msg.info.observation||{});
     renderSelf(msg.info.observation||{});
     log(msg.info.events||[]);
   };
