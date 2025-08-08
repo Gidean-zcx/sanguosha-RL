@@ -1,5 +1,7 @@
 from __future__ import annotations
 from typing import List, Tuple, Dict
+import json
+import os
 import numpy as np
 
 # Suits: 0 spade, 1 heart, 2 club, 3 diamond
@@ -20,8 +22,33 @@ CARD_ID_TO_NAME: Dict[int, str] = {i + 1: n for i, n in enumerate(NAMES)}
 NAME_TO_CARD_ID: Dict[str, int] = {n: i for i, n in CARD_ID_TO_NAME.items()}
 
 
+def build_deck_from_json(path: str) -> List[Tuple[int, int, int]]:
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    deck: List[Tuple[int, int, int]] = []
+    for entry in data:
+        name = entry["name"].lower()
+        suit = int(entry["suit"])  # 0 spade,1 heart,2 club,3 diamond
+        rank = int(entry["rank"])  # 1..13
+        cid = NAME_TO_CARD_ID.get(name)
+        if cid is None:
+            # skip unknown names
+            continue
+        deck.append((cid, suit, rank))
+    return deck
+
+
 def build_standard_deck(rng: np.random.Generator, size: int = 108) -> List[Tuple[int, int, int]]:
-    # Construct a deck by sampling names with weights to approximate distribution
+    # Try loading exact deck file first
+    default_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "standard_deck_108.json")
+    deck_from_file = build_deck_from_json(default_path)
+    if deck_from_file:
+        rng.shuffle(deck_from_file)
+        return deck_from_file
+
+    # Fallback: Construct a deck by sampling names with weights to approximate distribution
     weights = {
         "sha": 20,
         "shan": 18,
