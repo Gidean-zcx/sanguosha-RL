@@ -1,0 +1,35 @@
+Metadata-Version: 2.4
+Name: sgs-pz
+Version: 0.1.0
+Summary: Sanguosha (Identity) PettingZoo AEC environment + FastAPI gateway + RLDS recorder
+Author: AutoDev
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: pettingzoo>=1.24.3
+Requires-Dist: gymnasium>=0.29.1
+Requires-Dist: numpy>=1.26.0
+Requires-Dist: pydantic>=2.8.2
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn>=0.30.0
+Requires-Dist: orjson>=3.10.7
+Requires-Dist: websockets>=12.0
+Requires-Dist: rich>=13.7.1
+Requires-Dist: typer>=0.12.3
+Provides-Extra: dev
+Requires-Dist: pytest>=8.2.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.1.0; extra == "dev"
+Requires-Dist: ruff>=0.4.7; extra == "dev"
+Requires-Dist: mypy>=1.10.0; extra == "dev"
+Requires-Dist: black>=24.4.2; extra == "dev"
+
+# SGS-PZ: Sanguosha (Identity) PettingZoo AEC Environment
+
+This repository provides a server-authoritative Sanguosha (Three Kingdoms Kill) rules engine exposed as a PettingZoo AEC environment, with FastAPI gateway and RLDS-compatible recorder.
+
+Quickstart:
+
+- Install: `pip install -e .[dev]`
+- Test: `pytest`
+- Run an episode via API: `uvicorn api.main:app --reload --host 0.0.0.0 --port 8000`
+
+Roadmap follows M0-M6 milestones described in the task.
