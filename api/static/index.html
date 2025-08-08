@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SGS Web UI</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 20px; }
+    .row { margin-bottom: 8px; }
+    #mask { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; }
+    .btn { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    pre { background: #f7f7f7; padding: 8px; border-radius: 6px; max-height: 240px; overflow: auto; }
+  </style>
+</head>
+<body>
+  <h2>三国杀 Web UI</h2>
+  <div class="row">
+    <button id="create" class="btn">创建房间</button>
+    <label>game_id:</label> <input id="game_id" size="40" />
+  </div>
+  <div class="row">
+    <label>加入座位:</label>
+    <input id="seat" type="number" value="0" min="0" max="7" />
+    <select id="kind">
+      <option value="human">human</option>
+      <option value="llm">llm</option>
+      <option value="bot">bot</option>
+    </select>
+    <input id="provider" placeholder="provider (llm)" />
+    <input id="model" placeholder="model (llm)" />
+    <button id="join" class="btn">加入</button>
+  </div>
+  <div class="row">
+    <button id="connect" class="btn">连接对局</button>
+  </div>
+  <div class="row">
+    <div>当前出手: <span id="agent">-</span>，阶段: <span id="phase">-</span></div>
+  </div>
+  <div class="row">
+    <div id="mask"></div>
+  </div>
+  <div class="row">
+    <pre id="log"></pre>
+  </div>
+
+<script>
+const el = (id)=>document.getElementById(id);
+const log = (m)=>{ const p=el('log'); p.textContent += (typeof m==='string'? m: JSON.stringify(m)) + "\n"; p.scrollTop = p.scrollHeight; };
+
+el('create').onclick = async ()=>{
+  const r = await fetch('/rooms', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({seed:0,num_players:4,record:true})});
+  const j = await r.json();
+  el('game_id').value = j.game_id;
+  log(['create_room', j]);
+};
+
+el('join').onclick = async ()=>{
+  const body = {game_id: el('game_id').value, seat: parseInt(el('seat').value,10), kind: el('kind').value, provider: el('provider').value||null, model: el('model').value||null};
+  const r = await fetch('/rooms/join', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const j = await r.json();
+  log(['join', j]);
+};
+
+let ws = null;
+function renderMask(mask){
+  const c = el('mask');
+  c.innerHTML = '';
+  if(!mask) return;
+  mask.forEach((v,i)=>{
+    const b = document.createElement('button');
+    b.textContent = i;
+    b.className = 'btn';
+    b.disabled = !v;
+    b.onclick = ()=>{
+      if(ws && ws.readyState===1){ ws.send(JSON.stringify({action:i})); }
+    };
+    c.appendChild(b);
+  });
+}
+
+el('connect').onclick = ()=>{
+  if(ws){ try{ ws.close(); }catch(e){} }
+  const gid = el('game_id').value;
+  ws = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws/game/'+gid);
+  ws.onopen = ()=> log('ws open');
+  ws.onclose = ()=> log('ws close');
+  ws.onerror = (e)=> log(['ws error', e.message||e]);
+  ws.onmessage = (ev)=>{
+    const msg = JSON.parse(ev.data);
+    el('agent').textContent = msg.agent;
+    el('phase').textContent = msg.info.phase;
+    renderMask(msg.info.mask);
+    log(msg.info.events||[]);
+  };
+};
+</script>
+</body>
+</html>

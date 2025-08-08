@@ -5,8 +5,17 @@ from coordinator import LocalRoom, HeadlessBatch, RoomCoordinator
 import asyncio
 from agents import RandomLegalBot
 from agents.llm_adapter import LLMAdapter
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import os
 
 app = FastAPI(title="SGS PettingZoo API")
+
+# mount static web ui
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
 
 rc = RoomCoordinator()
 
@@ -15,6 +24,14 @@ class CreateRoomReq(BaseModel):
     seed: int = 0
     num_players: int = 4
     record: bool = True
+
+
+@app.get("/")
+def root_page():
+    index_path = os.path.join(static_dir, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"ok": True}
 
 
 @app.post("/rooms")
