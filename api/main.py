@@ -27,12 +27,14 @@ class JoinReq(BaseModel):
     game_id: str
     seat: int
     kind: str = "human"  # human/llm/bot
+    provider: str | None = None
+    model: str | None = None
 
 
 @app.post("/rooms/join")
 def join_room(req: JoinReq):
-    # MVP: no persistence of joiners, just acknowledge
-    return {"ok": True}
+    ok = rc.join(req.game_id, req.seat, req.kind, req.provider, req.model)
+    return {"ok": bool(ok)}
 
 
 class HeadlessReq(BaseModel):
@@ -85,7 +87,23 @@ async def ws_game(ws: WebSocket, game_id: str):
     from sgs_env import env as make_env
     e = make_env(seed=room.seed, num_players=room.num_players)
     e.reset(seed=room.seed)
-    bots = {agent: RandomLegalBot(seed=room.seed + i) for i, agent in enumerate(e.agents)}
+    # Build controllers per seat
+    agents = list(e.agents)
+    seat_of_agent = {agent: e.unwrapped.state.players[agent].seat for agent in agents}
+    controllers: dict[str, tuple[str, object]] = {}
+    for agent in agents:
+        seat = seat_of_agent[agent]
+        cfg = room.seats.get(seat, {"kind": "bot"})
+        kind = (cfg.get("kind") or "bot").lower()
+        if kind == "llm":
+            prov = cfg.get("provider") or "auto"
+            model = cfg.get("model") or None
+            controllers[agent] = ("llm", LLMAdapter(provider=prov, model=model, seed=room.seed + seat))
+        elif kind == "human":
+            controllers[agent] = ("human", None)
+        else:
+            controllers[agent] = ("bot", RandomLegalBot(seed=room.seed + seat))
+
     step = 0
     while step < 200 and not (all(e.terminations.values()) or all(e.truncations.values())):
         agent = e.agent_selection
@@ -98,13 +116,23 @@ async def ws_game(ws: WebSocket, game_id: str):
                 "phase": info.get("observation_struct", {}).get("phase"),
             },
         })
-        # wait for client action with timeout; fallback to bot
-        try:
-            msg = await asyncio.wait_for(ws.receive_json(), timeout=0.2)
-            a = int(msg.get("action", 0))
-        except Exception:
-            mask = info.get("legal_action_mask")
-            a = bots[agent].act(mask)
+        mask = info.get("legal_action_mask")
+        ctrl_kind, ctrl_obj = controllers.get(agent, ("bot", RandomLegalBot(seed=0)))
+        a: int | None = None
+        # priority: human from WS, else LLM, else bot
+        if ctrl_kind == "human":
+            try:
+                msg = await asyncio.wait_for(ws.receive_json(), timeout=1.0)
+                a = int(msg.get("action", 0))
+            except Exception:
+                a = None
+        if a is None and ctrl_kind == "llm":
+            try:
+                a = int(ctrl_obj.act(info.get("observation_struct"), mask))
+            except Exception:
+                a = None
+        if a is None:
+            a = int(RandomLegalBot(seed=room.seed + step).act(mask))
         e.step(a)
         step += 1
     await ws.close()

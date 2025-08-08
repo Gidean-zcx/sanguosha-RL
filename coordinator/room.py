@@ -1,11 +1,12 @@
 from __future__ import annotations
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import uuid
 import numpy as np
 
 from sgs_env import env as make_env
 from recorder import RLDSRecorder, StepRecord
 from agents import RandomLegalBot
+from agents.llm_adapter import LLMAdapter
 
 
 class LocalRoom:
@@ -15,10 +16,13 @@ class LocalRoom:
         self.record = record
         self.game_id = str(uuid.uuid4())
         self.recorder = RLDSRecorder()
+        # seats config: seat index -> dict(kind, provider, model)
+        self.seats: Dict[int, Dict[str, Optional[str]]] = {}
 
     def run_episode(self, max_steps: int = 200) -> str:
         e = make_env(seed=self.seed, num_players=self.num_players)
         e.reset(seed=self.seed)
+        # default: random bots
         bots = {agent: RandomLegalBot(seed=self.seed + i) for i, agent in enumerate(e.agents)}
         step_idx = 0
         terminated_all = False
@@ -99,3 +103,10 @@ class RoomCoordinator:
 
     def get_room(self, game_id: str) -> LocalRoom:
         return self.rooms[game_id]
+
+    def join(self, game_id: str, seat: int, kind: str = "human", provider: Optional[str] = None, model: Optional[str] = None) -> bool:
+        room = self.get_room(game_id)
+        if seat < 0 or seat >= room.num_players:
+            return False
+        room.seats[seat] = {"kind": kind, "provider": provider, "model": model}
+        return True
