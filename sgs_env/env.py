@@ -8,6 +8,18 @@ from gymnasium.spaces import Discrete, Dict as DictSpace, Box
 from .constants import ACTION_SPACE_SIZE, Action, Phase, Role
 from .game_state import GameConfig, GameRNG, GameState, PlayerState
 from .observation import build_observation, build_legal_action_mask, card_name
+from .actions import (
+    INDEX_PASS,
+    INDEX_TAO,
+    INDEX_CONFIRM,
+    INDEX_RESP_SHAN,
+    INDEX_SHA_BASE,
+    NUM_SEAT_SLOTS,
+    INDEX_DISCARD_BASE,
+    NUM_DISCARD_SLOTS,
+    seat_from_sha_action_index,
+    discard_slot_from_action_index,
+)
 
 
 AGENTS_DEFAULT = [
@@ -106,8 +118,8 @@ class SgsAecEnv(AECEnv):
     def _default_action_for_phase(self) -> int:
         phase = self.state.current_phase
         if phase in (Phase.DISCARD, Phase.PREPARE, Phase.JUDGEMENT, Phase.DRAW, Phase.END):
-            return int(Action.CONFIRM)
-        return int(Action.PASS)
+            return int(INDEX_CONFIRM)
+        return int(INDEX_PASS)
 
     def _select_next_agent(self):
         # In AEC, we select current player only; others receive observations as their turn arrives
@@ -169,24 +181,42 @@ class SgsAecEnv(AECEnv):
             state.current_phase = Phase.PLAY
             return
         if phase == Phase.PLAY:
-            if action == Action.PASS:
+            if action == INDEX_PASS:
                 events.append({"type": "pass", "agent": agent})
                 state.current_phase = Phase.DISCARD
                 return
-            if action == Action.PLAY_TAO:
-                if me.hp < me.max_hp:
+            if action == INDEX_TAO:
+                if me.hp < me.max_hp and self._consume_first_named_card(me, name="tao"):
                     me.hp = min(me.max_hp, me.hp + 1)
-                    self._consume_first_named_card(me, name="tao")
                     events.append({"type": "play", "card": "tao", "agent": agent})
                 else:
-                    events.append({"type": "noop", "reason": "hp_full"})
+                    events.append({"type": "noop", "reason": "hp_full_or_no_tao"})
                 return
-            if action == Action.PLAY_SHA:
-                if not self.state.used_sha_in_turn.get(agent, False) and self._consume_first_named_card(me, name="sha"):
-                    self.state.used_sha_in_turn[agent] = True
-                    events.append({"type": "play", "card": "sha", "agent": agent})
+            # SHA with target
+            target_seat = seat_from_sha_action_index(action)
+            if target_seat is not None:
+                target_agent = state.agent_by_seat(target_seat)
+                if (
+                    target_agent
+                    and target_agent != agent
+                    and not state.used_sha_in_turn.get(agent, False)
+                    and self._consume_first_named_card(me, name="sha")
+                ):
+                    state.used_sha_in_turn[agent] = True
+                    # open response window for SHAN
+                    state.response_pending = {
+                        "type": "shan",
+                        "attacker": agent,
+                        "defender": target_agent,
+                    }
+                    events.append({
+                        "type": "play",
+                        "card": "sha",
+                        "agent": agent,
+                        "target": target_agent,
+                    })
                 else:
-                    events.append({"type": "noop", "reason": "sha_limit_or_no_card"})
+                    events.append({"type": "noop", "reason": "illegal_sha"})
                 return
             # default: end play phase
             state.current_phase = Phase.DISCARD
@@ -194,16 +224,16 @@ class SgsAecEnv(AECEnv):
         if phase == Phase.DISCARD:
             over = len(me.hand) - me.hp
             if over > 0:
-                if action == Action.DISCARD_CARD and me.hand:
-                    # discard the last card as a deterministic choice for MVP
-                    dropped = me.hand.pop()
-                    state.discard_pile.append(dropped)  # (cid, suit)
+                slot = discard_slot_from_action_index(action)
+                if slot is not None and slot < len(me.hand):
+                    dropped = me.hand.pop(slot)
+                    state.discard_pile.append(dropped)
                     events.append({"type": "discard", "agent": agent, "count": 1})
                 else:
                     events.append({"type": "rule_enforced_wait_discard"})
                 return
             # hand size <= hp, confirm to end
-            if action == Action.CONFIRM:
+            if action == INDEX_CONFIRM:
                 events.append({"type": "phase", "phase": Phase.END.value, "agent": agent})
                 state.current_phase = Phase.END
                 return
@@ -217,6 +247,51 @@ class SgsAecEnv(AECEnv):
                 state.turn_count += 1
             events.append({"type": "turn_end", "agent": agent})
             return
+
+        # Response handling regardless of main phases
+        if state.response_pending and agent == state.response_pending.get("defender"):
+            if action == INDEX_RESP_SHAN and self._consume_first_named_card(me, name="shan"):
+                # attack dodged
+                events.append({
+                    "type": "respond",
+                    "card": "shan",
+                    "agent": agent,
+                    "against": state.response_pending.get("attacker"),
+                })
+                state.response_pending = None
+                # After response, continue with attacker's play phase (no phase change)
+                return
+            else:
+                # no SHAN: take 1 damage
+                attacker = state.response_pending.get("attacker")
+                events.append({
+                    "type": "hit",
+                    "by": attacker,
+                    "agent": agent,
+                    "dmg": 1,
+                })
+                me.hp -= 1
+                state.response_pending = None
+                # Check dying
+                if me.hp <= 0:
+                    state.dying_pending = {"agent": agent}
+                return
+
+        # Dying window: allow TAO from self (or others in full rules; MVP self)
+        if state.dying_pending and agent == state.dying_pending.get("agent"):
+            if action == INDEX_TAO and self._consume_first_named_card(me, name="tao"):
+                me.hp += 1
+                events.append({"type": "rescue", "card": "tao", "agent": agent})
+                if me.hp > 0:
+                    state.dying_pending = None
+                return
+            else:
+                # cannot play TAO => death
+                me.alive = False
+                events.append({"type": "death", "agent": agent})
+                state.dying_pending = None
+                self._check_termination_after_death(events)
+                return
 
     def _consume_first_named_card(self, me: PlayerState, name: str) -> bool:
         # Scan hand indices and remove the first card with matching name
@@ -237,3 +312,19 @@ class SgsAecEnv(AECEnv):
                 "rng": self.state.to_info_rng_hash(),
                 "observation_struct": obs_struct,  # full struct for API/UI
             }
+
+    def _check_termination_after_death(self, events: List[Dict]):
+        # Simplified victory: if only one side alive or lord dead -> terminate
+        alive_agents = [a for a, p in self.state.players.items() if p.alive]
+        if len(alive_agents) <= 1:
+            for a in self.agents:
+                self.terminations[a] = True
+            events.append({"type": "game_over", "reason": "last_man"})
+            return
+        # lord dead => rebels win (MVP simplification)
+        for a, p in self.state.players.items():
+            if p.role.value == "lord" and not p.alive:
+                for aa in self.agents:
+                    self.terminations[aa] = True
+                events.append({"type": "game_over", "reason": "lord_dead"})
+                return

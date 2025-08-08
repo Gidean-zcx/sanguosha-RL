@@ -44,6 +44,9 @@ class GameState:
     current_phase: Phase = Phase.PREPARE
     turn_count: int = 0
     used_sha_in_turn: Dict[str, bool] = field(default_factory=dict)
+    # pending states
+    response_pending: Optional[Dict] = None  # {type:'shan', attacker, defender}
+    dying_pending: Optional[Dict] = None  # {agent}
 
     def serialize_public(self) -> Dict:
         return {
@@ -73,3 +76,9 @@ class GameState:
         deck_arr = np.array(self.deck, dtype=np.int64).flatten()
         val = int(deck_arr[: min(64, deck_arr.size)].sum()) ^ int(self.rng.seed)
         return f"seed:{self.rng.seed}|h:{val}"
+
+    def agent_by_seat(self, seat: int) -> Optional[str]:
+        for aid, ps in self.players.items():
+            if ps.seat == seat and ps.alive:
+                return aid
+        return None

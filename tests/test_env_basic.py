@@ -1,7 +1,8 @@
 from __future__ import annotations
 import numpy as np
 from sgs_env import env as make_env
-from sgs_env.constants import Action, Phase
+from sgs_env.constants import Phase
+from sgs_env.actions import INDEX_CONFIRM, INDEX_PASS, INDEX_DISCARD_BASE, NUM_DISCARD_SLOTS
 
 
 def test_env_reset_and_iterates():
@@ -27,7 +28,7 @@ def step_until_phase(e, phase: str, limit=200):
             return agent
         # take confirm by default
         mask = info["legal_action_mask"]
-        action = int(Action.CONFIRM) if mask[int(Action.CONFIRM)] else int(Action.PASS)
+        action = int(INDEX_CONFIRM) if mask[int(INDEX_CONFIRM)] else int(INDEX_PASS)
         e.step(action)
     raise RuntimeError("phase not reached")
 
@@ -45,13 +46,18 @@ def test_discard_to_hp_enforced():
     over = len(me["hand"]) - me["hp"]
     mask = info["legal_action_mask"]
     if over > 0:
-        assert mask[int(Action.DISCARD_CARD)] == 1
+        # at least one discard slot should be available when over limit
+        from sgs_env.actions import INDEX_DISCARD_BASE, NUM_DISCARD_SLOTS
+        assert any(mask[INDEX_DISCARD_BASE + i] for i in range(NUM_DISCARD_SLOTS))
         # Do a few discards until allowed to confirm
         for _ in range(over):
-            e.step(int(Action.DISCARD_CARD))
+            # discard slot 0 if available else first available
+            idx = next((INDEX_DISCARD_BASE + i for i in range(NUM_DISCARD_SLOTS) if mask[INDEX_DISCARD_BASE + i]), None)
+            assert idx is not None
+            e.step(idx)
             _obs, _rew, _term, _trunc, info = e.last()
-        mask = info["legal_action_mask"]
-        assert mask[int(Action.CONFIRM)] == 1
+            mask = info["legal_action_mask"]
+        assert mask[int(INDEX_CONFIRM)] == 1
     else:
         # If not over, should be able to confirm
-        assert mask[int(Action.CONFIRM)] == 1
+        assert mask[int(INDEX_CONFIRM)] == 1
