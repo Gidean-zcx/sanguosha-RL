@@ -321,6 +321,8 @@ class SgsAecEnv(AECEnv):
                             "forbid_shan": forbid_shan,
                             "ignore_armor": ignore_armor,
                         }
+                        # hand over to defender for response
+                        state.current_agent_idx = state.agent_order.index(target_agent)
                         events.append({
                             "type": "play",
                             "card": "sha",

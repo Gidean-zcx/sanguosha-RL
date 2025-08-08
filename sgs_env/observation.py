@@ -135,7 +135,7 @@ def build_legal_action_mask(state: GameState, agent: str) -> np.ndarray:
             for seat in range(NUM_SEAT_SLOTS):
                 target = state.agent_by_seat(seat)
                 if target and target != agent and state.players[target].alive:
-                    # kongcheng target immunity
+                    # kongcheng: cannot be targeted by sha when no hand
                     if state.players[target].hero == "zhugeliang" and len(state.players[target].hand) == 0:
                         continue
                     if in_sha_range(state, agent, target):
