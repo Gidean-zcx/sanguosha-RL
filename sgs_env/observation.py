@@ -1,18 +1,30 @@
 from __future__ import annotations
 from typing import Dict, List, Tuple
 import numpy as np
-from .constants import ACTION_SPACE_SIZE, Action, Phase
+from .constants import ACTION_SPACE_SIZE, Phase
 from .game_state import GameState, PlayerState
 from .actions import (
     INDEX_PASS,
     INDEX_TAO,
     INDEX_CONFIRM,
     INDEX_RESP_SHAN,
+    INDEX_RESP_SHA,
+    INDEX_RESP_WUXIE,
     INDEX_SHA_BASE,
     NUM_SEAT_SLOTS,
     INDEX_DISCARD_BASE,
     NUM_DISCARD_SLOTS,
     action_index_for_sha_to_seat,
+    action_index_for_targeted,
+    seat_from_targeted,
+    INDEX_JUEDOU_BASE,
+    INDEX_GUOHE_BASE,
+    INDEX_SHUNSHOU_BASE,
+    INDEX_NANMAN,
+    INDEX_WANJIAN,
+    INDEX_LE_BASE,
+    INDEX_BINGLIANG_BASE,
+    INDEX_SHANDIAN,
 )
 
 
@@ -45,15 +57,35 @@ def build_legal_action_mask(state: GameState, agent: str) -> np.ndarray:
         mask[INDEX_PASS] = 1
         return mask
 
-    if state.agent_order[state.current_agent_idx] != agent:
-        # not my turn or response turn for someone else
-        if state.response_pending and state.response_pending.get("defender") == agent:
-            # can play SHAN if has it or PASS
-            has_shan = any_card_named(state, me, "shan")
+    # Response windows override normal turns
+    if state.response_pending:
+        typ = state.response_pending.get("type")
+        target = state.response_pending.get("target")
+        if typ == "shan" and target == agent:
             mask[INDEX_PASS] = 1
-            if has_shan:
+            if any_card_named(state, me, "shan"):
                 mask[INDEX_RESP_SHAN] = 1
             return mask
+        if typ == "sha" and target == agent:
+            mask[INDEX_PASS] = 1
+            if any_card_named(state, me, "sha"):
+                mask[INDEX_RESP_SHA] = 1
+            return mask
+        if typ == "wuxie" and state.response_pending.get("current") == agent:
+            mask[INDEX_PASS] = 1
+            if any_card_named(state, me, "wuxie"):
+                mask[INDEX_RESP_WUXIE] = 1
+            return mask
+
+    # Dying window
+    if state.dying_pending and state.dying_pending.get("agent") == agent:
+        mask[INDEX_PASS] = 1
+        if any_card_named(state, me, "tao"):
+            mask[INDEX_TAO] = 1
+        return mask
+
+    # Normal turn check
+    if state.agent_order[state.current_agent_idx] != agent:
         mask[INDEX_PASS] = 1
         return mask
 
@@ -67,22 +99,57 @@ def build_legal_action_mask(state: GameState, agent: str) -> np.ndarray:
         return mask
 
     if phase == Phase.PLAY:
-        # PASS always allowed
         mask[INDEX_PASS] = 1
-        # SHA to targets within range
+        # SHA
         if not state.used_sha_in_turn.get(agent, False) and any_card_named(state, me, "sha"):
             for seat in range(NUM_SEAT_SLOTS):
                 target = state.agent_by_seat(seat)
                 if target and target != agent and state.players[target].alive:
                     if in_sha_range(state, agent, target):
                         mask[action_index_for_sha_to_seat(seat)] = 1
-        # TAO if wounded
+        # TAO
         if any_card_named(state, me, "tao") and me.hp < me.max_hp:
             mask[INDEX_TAO] = 1
+        # JUEDOU
+        if any_card_named(state, me, "juedou"):
+            for seat in range(NUM_SEAT_SLOTS):
+                target = state.agent_by_seat(seat)
+                if target and target != agent and state.players[target].alive:
+                    mask[action_index_for_targeted(INDEX_JUEDOU_BASE, seat)] = 1
+        # GUOHE (range: any)
+        if any_card_named(state, me, "guohe"):
+            for seat in range(NUM_SEAT_SLOTS):
+                target = state.agent_by_seat(seat)
+                if target and target != agent and state.players[target].alive:
+                    mask[action_index_for_targeted(INDEX_GUOHE_BASE, seat)] = 1
+        # SHUNSHOU (distance 1)
+        if any_card_named(state, me, "shunshou"):
+            for seat in range(NUM_SEAT_SLOTS):
+                target = state.agent_by_seat(seat)
+                if target and target != agent and state.players[target].alive:
+                    if in_distance_one(state, agent, target):
+                        mask[action_index_for_targeted(INDEX_SHUNSHOU_BASE, seat)] = 1
+        # NANMAN & WANJIAN
+        if any_card_named(state, me, "nanman"):
+            mask[INDEX_NANMAN] = 1
+        if any_card_named(state, me, "wanjian"):
+            mask[INDEX_WANJIAN] = 1
+        # Delayed: LE/BINGLIANG to targets; SHANDIAN to self
+        if any_card_named(state, me, "le"):
+            for seat in range(NUM_SEAT_SLOTS):
+                target = state.agent_by_seat(seat)
+                if target and target != agent and state.players[target].alive:
+                    mask[action_index_for_targeted(INDEX_LE_BASE, seat)] = 1
+        if any_card_named(state, me, "bingliang"):
+            for seat in range(NUM_SEAT_SLOTS):
+                target = state.agent_by_seat(seat)
+                if target and target != agent and state.players[target].alive:
+                    mask[action_index_for_targeted(INDEX_BINGLIANG_BASE, seat)] = 1
+        if any_card_named(state, me, "shandian"):
+            mask[INDEX_SHANDIAN] = 1
         return mask
 
     if phase == Phase.DISCARD:
-        # discard by slot indices
         over = len(me.hand) - me.hp
         if over > 0:
             for i in range(min(NUM_DISCARD_SLOTS, len(me.hand))):
@@ -102,11 +169,19 @@ def any_card_named(state: GameState, me: PlayerState, name: str) -> bool:
     return False
 
 
-# Minimal mapping for demo
 _CARD_ID_TO_NAME = {
     1: "sha",
     2: "shan",
     3: "tao",
+    4: "juedou",
+    5: "guohe",
+    6: "shunshou",
+    7: "nanman",
+    8: "wanjian",
+    9: "wuxie",
+    10: "le",
+    11: "bingliang",
+    12: "shandian",
 }
 
 
@@ -115,18 +190,30 @@ def card_name(card_id: int) -> str:
 
 
 def in_sha_range(state: GameState, attacker: str, defender: str) -> bool:
-    # simplified: weapon range +1 base, no horses yet
     rng = state.players[attacker].equip_weapon_range
-    # circular distance by seat
     a = state.players[attacker].seat
     d = state.players[defender].seat
     n = len(state.agent_order)
     clockwise = (d - a) % n
     counter = (a - d) % n
     dist = min(clockwise, counter)
-    # horses: attacker has -1 horse reduces distance by 1; defender's +1 horse increases by 1
     if state.players[attacker].equip_minus_horse:
         dist = max(1, dist - 1)
     if state.players[defender].equip_plus_horse:
         dist = dist + 1
     return dist <= rng
+
+
+def in_distance_one(state: GameState, attacker: str, defender: str) -> bool:
+    # distance one check for shunshou
+    a = state.players[attacker].seat
+    d = state.players[defender].seat
+    n = len(state.agent_order)
+    clockwise = (d - a) % n
+    counter = (a - d) % n
+    dist = min(clockwise, counter)
+    if state.players[attacker].equip_minus_horse:
+        dist = max(1, dist - 1)
+    if state.players[defender].equip_plus_horse:
+        dist = dist + 1
+    return dist <= 1
