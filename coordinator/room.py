@@ -86,3 +86,16 @@ class HeadlessBatch:
             for f in as_completed(futs):
                 game_ids.append(f.result())
         return game_ids
+
+
+class RoomCoordinator:
+    def __init__(self) -> None:
+        self.rooms: Dict[str, LocalRoom] = {}
+
+    def create_room(self, seed: int = 0, num_players: int = 4, record: bool = True) -> str:
+        room = LocalRoom(seed=seed, num_players=num_players, record=record)
+        self.rooms[room.game_id] = room
+        return room.game_id
+
+    def get_room(self, game_id: str) -> LocalRoom:
+        return self.rooms[game_id]

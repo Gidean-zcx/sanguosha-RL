@@ -1,3 +1,3 @@
-from .room import LocalRoom
+from .room import LocalRoom, HeadlessBatch, RoomCoordinator
 
-__all__ = ["LocalRoom"]
+__all__ = ["LocalRoom", "HeadlessBatch", "RoomCoordinator"]
