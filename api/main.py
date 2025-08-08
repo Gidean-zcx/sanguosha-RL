@@ -1,13 +1,25 @@
 from __future__ import annotations
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, Query
 from pydantic import BaseModel
 from coordinator import LocalRoom, HeadlessBatch, RoomCoordinator
 import asyncio
 from agents import RandomLegalBot
 from agents.llm_adapter import LLMAdapter
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 import os
+from sgs_env.cards import CARD_ID_TO_NAME
+from sgs_env.actions import (
+    INDEX_SHA_BASE,
+    INDEX_JUEDOU_BASE,
+    INDEX_GUOHE_BASE,
+    INDEX_SHUNSHOU_BASE,
+    INDEX_LE_BASE,
+    INDEX_BINGLIANG_BASE,
+    NUM_SEAT_SLOTS,
+    action_index_for_sha_to_seat,
+    action_index_for_targeted,
+)
 
 app = FastAPI(title="SGS PettingZoo API")
 
@@ -32,6 +44,11 @@ def root_page():
     if os.path.exists(index_path):
         return FileResponse(index_path)
     return {"ok": True}
+
+
+@app.get("/meta/cards")
+def cards_meta():
+    return JSONResponse({"card_id_to_name": CARD_ID_TO_NAME})
 
 
 @app.post("/rooms")
@@ -102,37 +119,48 @@ async def ws_headless(ws: WebSocket):
 
 
 @app.websocket("/ws/game/{game_id}")
-async def ws_game(ws: WebSocket, game_id: str):
+async def ws_game(ws: WebSocket, game_id: str, seat: int = Query(-1, description="control seat; -1 watch")):
     await ws.accept()
     room = rc.get_room(game_id)
     from sgs_env import env as make_env
     e = make_env(seed=room.seed, num_players=room.num_players)
     e.reset(seed=room.seed)
-    # Build controllers per seat
+    # Build controllers per seat (default bot). If seat>=0 -> human controller for that seat
     agents = list(e.agents)
     seat_of_agent = {agent: e.unwrapped.state.players[agent].seat for agent in agents}
     controllers: dict[str, tuple[str, object]] = {}
     for agent in agents:
-        seat = seat_of_agent[agent]
-        cfg = room.seats.get(seat, {"kind": "bot"})
-        kind = (cfg.get("kind") or "bot").lower()
-        if kind == "llm":
-            prov = cfg.get("provider") or "auto"
-            model = cfg.get("model") or None
-            controllers[agent] = ("llm", LLMAdapter(provider=prov, model=model, seed=room.seed + seat))
-        elif kind == "human":
+        s = seat_of_agent[agent]
+        if seat >= 0 and s == seat:
             controllers[agent] = ("human", None)
         else:
-            controllers[agent] = ("bot", RandomLegalBot(seed=room.seed + seat))
+            controllers[agent] = ("bot", RandomLegalBot(seed=room.seed + s))
 
     # recent history for LLM context
     history: list[dict] = []
 
     step = 0
-    while step < 200 and not (all(e.terminations.values()) or all(e.truncations.values())):
+    while step < 300 and not (all(e.terminations.values()) or all(e.truncations.values())):
         agent = e.agent_selection
         _o, _r, _t, _tr, info = e.last()
         obs_struct = info.get("observation_struct")
+        # build target hints
+        targets = []
+        st = e.unwrapped.state
+        for s in range(NUM_SEAT_SLOTS):
+            tgt = st.agent_by_seat(s)
+            if tgt and st.players[tgt].alive and tgt != agent:
+                item = {
+                    "seat": s,
+                    "sha": action_index_for_sha_to_seat(s),
+                    "juedou": action_index_for_targeted(INDEX_JUEDOU_BASE, s),
+                    "guohe": action_index_for_targeted(INDEX_GUOHE_BASE, s),
+                    "shunshou": action_index_for_targeted(INDEX_SHUNSHOU_BASE, s),
+                    "le": action_index_for_targeted(INDEX_LE_BASE, s),
+                    "bingliang": action_index_for_targeted(INDEX_BINGLIANG_BASE, s),
+                }
+                targets.append(item)
+        seating = [{"agent": a, "seat": seat_of_agent[a], "alive": e.unwrapped.state.players[a].alive} for a in agents]
         msg = {
             "agent": agent,
             "info": {
@@ -143,22 +171,19 @@ async def ws_game(ws: WebSocket, game_id: str):
                 "rewards": e.rewards,
                 "terminations": e.terminations,
                 "truncations": e.truncations,
+                "targets": targets,
+                "seating": seating,
             },
         }
         await ws.send_json(msg)
         mask = info.get("legal_action_mask")
         ctrl_kind, ctrl_obj = controllers.get(agent, ("bot", RandomLegalBot(seed=0)))
         a: int | None = None
-        # priority: human from WS, else LLM, else bot
+        # priority: human for matching seat, else bot
         if ctrl_kind == "human":
             try:
                 cli = await asyncio.wait_for(ws.receive_json(), timeout=1.0)
                 a = int(cli.get("action", 0))
-            except Exception:
-                a = None
-        if a is None and ctrl_kind == "llm":
-            try:
-                a = int(ctrl_obj.act(obs_struct, mask, history))
             except Exception:
                 a = None
         if a is None:

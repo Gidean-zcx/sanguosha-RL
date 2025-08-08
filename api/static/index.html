@@ -11,6 +11,9 @@
     .btn { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; }
     .btn:disabled { opacity: .5; cursor: not-allowed; }
     pre { background: #f7f7f7; padding: 8px; border-radius: 6px; max-height: 240px; overflow: auto; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .card { padding: 8px; border: 1px solid #e5e5e5; border-radius: 8px; }
+    .pill { padding: 2px 6px; background: #eef; border-radius: 10px; margin-right: 4px; display: inline-block; }
   </style>
 </head>
 <body>
@@ -18,35 +21,34 @@
   <div class="row">
     <button id="create" class="btn">创建房间</button>
     <label>game_id:</label> <input id="game_id" size="40" />
+    <label>seat:</label> <input id="seat" type="number" value="0" min="-1" max="7" />
+    <button id="connect" class="btn">连接/观战</button>
   </div>
-  <div class="row">
-    <label>加入座位:</label>
-    <input id="seat" type="number" value="0" min="0" max="7" />
-    <select id="kind">
-      <option value="human">human</option>
-      <option value="llm">llm</option>
-      <option value="bot">bot</option>
-    </select>
-    <input id="provider" placeholder="provider (llm)" />
-    <input id="model" placeholder="model (llm)" />
-    <button id="join" class="btn">加入</button>
-  </div>
-  <div class="row">
-    <button id="connect" class="btn">连接对局</button>
-  </div>
-  <div class="row">
-    <div>当前出手: <span id="agent">-</span>，阶段: <span id="phase">-</span></div>
-  </div>
-  <div class="row">
-    <div id="mask"></div>
-  </div>
-  <div class="row">
-    <pre id="log"></pre>
+  <div class="row grid">
+    <div class="card">
+      <div><b>当前出手</b>: <span id="agent">-</span>，<b>阶段</b>: <span id="phase">-</span></div>
+      <div id="seating"></div>
+      <div style="margin-top:6px"><b>可选目标</b>: <span id="targets"></span></div>
+      <div style="margin-top:6px"><b>动作掩码</b>:</div>
+      <div id="mask"></div>
+    </div>
+    <div class="card">
+      <div><b>我的手牌</b>:</div>
+      <div id="hand"></div>
+      <div style="margin-top:6px"><b>装备</b>: <span id="equip"></span></div>
+      <div style="margin-top:6px"><b>判定区</b>: <span id="judge"></span></div>
+      <div style="margin-top:6px"><b>事件</b>:</div>
+      <pre id="log"></pre>
+    </div>
   </div>
 
 <script>
 const el = (id)=>document.getElementById(id);
 const log = (m)=>{ const p=el('log'); p.textContent += (typeof m==='string'? m: JSON.stringify(m)) + "\n"; p.scrollTop = p.scrollHeight; };
+
+async function meta(){ try{ const r=await fetch('/meta/cards'); const j=await r.json(); return j.card_id_to_name||{}; }catch(e){ return {}; } }
+let CARDNAMES = {};
+meta().then(m=>CARDNAMES=m);
 
 el('create').onclick = async ()=>{
   const r = await fetch('/rooms', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({seed:0,num_players:4,record:true})});
@@ -55,34 +57,54 @@ el('create').onclick = async ()=>{
   log(['create_room', j]);
 };
 
-el('join').onclick = async ()=>{
-  const body = {game_id: el('game_id').value, seat: parseInt(el('seat').value,10), kind: el('kind').value, provider: el('provider').value||null, model: el('model').value||null};
-  const r = await fetch('/rooms/join', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-  const j = await r.json();
-  log(['join', j]);
-};
-
 let ws = null;
 function renderMask(mask){
-  const c = el('mask');
-  c.innerHTML = '';
+  const c = el('mask'); c.innerHTML = '';
   if(!mask) return;
   mask.forEach((v,i)=>{
     const b = document.createElement('button');
     b.textContent = i;
     b.className = 'btn';
     b.disabled = !v;
-    b.onclick = ()=>{
-      if(ws && ws.readyState===1){ ws.send(JSON.stringify({action:i})); }
-    };
+    b.onclick = ()=>{ if(ws && ws.readyState===1){ ws.send(JSON.stringify({action:i})); } };
     c.appendChild(b);
   });
 }
 
+function seatSpan(a){
+  const s = document.createElement('span'); s.className='pill'; s.textContent = `${a.agent}@${a.seat}${a.alive?'':'(dead)'}`; return s;
+}
+
+function targetSpan(t){
+  const s = document.createElement('span'); s.className='pill'; s.title = `sha:${t.sha} juedou:${t.juedou} guohe:${t.guohe} shunshou:${t.shunshou} le:${t.le} bingliang:${t.bingliang}`; s.textContent = `seat:${t.seat}`; return s;
+}
+
+function renderSeating(arr){ const c=el('seating'); c.innerHTML=''; (arr||[]).forEach(a=>c.appendChild(seatSpan(a))); }
+function renderTargets(arr){ const c=el('targets'); c.innerHTML=''; (arr||[]).forEach(t=>c.appendChild(targetSpan(t))); }
+
+function renderSelf(obs){
+  const me = obs && obs.self ? obs.self : null;
+  const h = el('hand'); h.innerHTML='';
+  if(me && Array.isArray(me.hand)){
+    me.hand.forEach(([cid,suit])=>{
+      const n = CARDNAMES[cid] || `#${cid}`;
+      const s = document.createElement('span'); s.className='pill'; s.textContent = `${n}`; h.appendChild(s);
+    });
+  }
+  const eq = el('equip');
+  if(me){ eq.textContent = `range=${me.equip.weapon_range} -1=${me.equip.minus_horse} +1=${me.equip.plus_horse}`; }
+  const j = el('judge');
+  if(me && Array.isArray(me.judgement_zone)){
+    j.textContent = me.judgement_zone.map(([cid,_])=>CARDNAMES[cid]||`#${cid}`).join(', ');
+  }
+}
+
 el('connect').onclick = ()=>{
   if(ws){ try{ ws.close(); }catch(e){} }
-  const gid = el('game_id').value;
-  ws = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws/game/'+gid);
+  const gid = el('game_id').value.trim();
+  const seat = parseInt(el('seat').value,10);
+  const qs = isNaN(seat) ? '' : `?seat=${seat}`;
+  ws = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws/game/'+gid+qs);
   ws.onopen = ()=> log('ws open');
   ws.onclose = ()=> log('ws close');
   ws.onerror = (e)=> log(['ws error', e.message||e]);
@@ -91,6 +113,9 @@ el('connect').onclick = ()=>{
     el('agent').textContent = msg.agent;
     el('phase').textContent = msg.info.phase;
     renderMask(msg.info.mask);
+    renderSeating(msg.info.seating);
+    renderTargets(msg.info.targets);
+    renderSelf(msg.info.observation||{});
     log(msg.info.events||[]);
   };
 };
