@@ -30,7 +30,10 @@ from .actions import (
     INDEX_RESP_WUXIE,
     INDEX_RESP_SHA,
     seat_from_targeted,
+    INDEX_EQUIP_WEAPON,
+    INDEX_EQUIP_ARMOR,
 )
+from .heroes import HEROES, hero_flags
 
 
 AGENTS_DEFAULT = [
@@ -153,8 +156,14 @@ class SgsAecEnv(AECEnv):
         roles = [Role.LORD, Role.REBEL, Role.REBEL, Role.LOYALIST][: self.config.num_players]
         rng.rng.shuffle(roles)
 
+        # Assign heroes
+        hero_pool = HEROES.copy()
+        rng.rng.shuffle(hero_pool)
+
         for i, agent in enumerate(self.agents):
-            state.players[agent] = PlayerState(seat=i, role=roles[i])
+            ps = PlayerState(seat=i, role=roles[i])
+            ps.hero = hero_pool[i % len(hero_pool)]
+            state.players[agent] = ps
         state.agent_order = list(self.agents)
         state.current_agent_idx = 0
         state.current_phase = Phase.PREPARE
@@ -215,27 +224,84 @@ class SgsAecEnv(AECEnv):
             target_seat = seat_from_sha_action_index(action)
             if target_seat is not None:
                 target_agent = state.agent_by_seat(target_seat)
+                unlimited_sha = me.hero == "zhangfei" or me.equip_weapon_name == "crossbow"
                 if (
                     target_agent
                     and target_agent != agent
-                    and not state.used_sha_in_turn.get(agent, False)
-                    and self._consume_first_named_card(me, name="sha")
+                    and (unlimited_sha or not state.used_sha_in_turn.get(agent, False))
                 ):
-                    state.used_sha_in_turn[agent] = True
-                    # open response window for SHAN
-                    state.response_pending = {
-                        "type": "shan",
-                        "attacker": agent,
-                        "defender": target_agent,
-                    }
-                    events.append({
-                        "type": "play",
-                        "card": "sha",
-                        "agent": agent,
-                        "target": target_agent,
-                    })
+                    # Determine if we can generate a Sha: real sha, wusheng red card, or longdan (shan as sha)
+                    consumed = self._consume_first_named_card_return(me, name="sha")
+                    used_source = "sha"
+                    if consumed is None and me.hero == "guanyu":
+                        # use first red card as sha (wusheng)
+                        consumed = self._consume_first_red_card(me)
+                        used_source = "wusheng"
+                    if consumed is None and me.hero == "zhaoyun":
+                        consumed = self._consume_first_named_card_return(me, name="shan")
+                        used_source = "longdan"
+                    if consumed is not None:
+                        state.used_sha_in_turn[agent] = not unlimited_sha
+                        sha_suit = consumed[1]
+                        # kongcheng immunity
+                        if state.players[target_agent].hero == "zhugeliang" and len(state.players[target_agent].hand) == 0:
+                            events.append({"type": "noop", "reason": "kongcheng_immunity"})
+                            return
+                        # tieqi: judge; if black, forbid shan
+                        forbid_shan = False
+                        if me.hero == "machao":
+                            judge = self._draw_judge_card()
+                            if judge is not None:
+                                forbid_shan = judge[1] in (0, 2)  # black
+                                events.append({"type": "judge", "skill": "tieqi", "suit": judge[1]})
+                        state.response_pending = {
+                            "type": "shan",
+                            "attacker": agent,
+                            "defender": target_agent,
+                            "sha_suit": sha_suit,
+                            "forbid_shan": forbid_shan,
+                        }
+                        events.append({
+                            "type": "play",
+                            "card": "sha",
+                            "source": used_source,
+                            "agent": agent,
+                            "target": target_agent,
+                        })
+                    else:
+                        events.append({"type": "noop", "reason": "no_sha_source"})
                 else:
                     events.append({"type": "noop", "reason": "illegal_sha"})
+                return
+            # EQUIP WEAPON
+            if action == INDEX_EQUIP_WEAPON:
+                # equip first weapon in hand
+                card = self._consume_first_named_card_return(me, name="crossbow")
+                if card is not None:
+                    me.equip_weapon_name = "crossbow"
+                    me.equip_weapon_range = 1
+                    events.append({"type": "equip", "slot": "weapon", "name": "crossbow", "agent": agent})
+                else:
+                    events.append({"type": "noop", "reason": "no_weapon_in_hand"})
+                return
+            # EQUIP ARMOR
+            if action == INDEX_EQUIP_ARMOR:
+                # prefer bagua->renwang->horse
+                for name in ("bagua", "renwang", "minus_horse", "plus_horse"):
+                    got = self._consume_first_named_card_return(me, name=name)
+                    if got is not None:
+                        if name == "bagua":
+                            me.equip_armor_name = "bagua"
+                        elif name == "renwang":
+                            me.equip_armor_name = "renwang"
+                        elif name == "minus_horse":
+                            me.equip_minus_horse = True
+                        elif name == "plus_horse":
+                            me.equip_plus_horse = True
+                        events.append({"type": "equip", "slot": "armor", "name": name, "agent": agent})
+                        break
+                else:
+                    events.append({"type": "noop", "reason": "no_armor_in_hand"})
                 return
             # default: end play phase
             state.current_phase = Phase.DISCARD
@@ -269,20 +335,36 @@ class SgsAecEnv(AECEnv):
 
         # Response handling regardless of main phases
         if state.response_pending and agent == state.response_pending.get("defender"):
-            if action == INDEX_RESP_SHAN and self._consume_first_named_card(me, name="shan"):
-                events.append({
-                    "type": "respond",
-                    "card": "shan",
-                    "agent": agent,
-                    "against": state.response_pending.get("attacker"),
-                })
+            # bagua: allow RESP_SHAN even without shan
+            allow_bagua = me.equip_armor_name == "bagua"
+            forbid_shan = bool(state.response_pending.get("forbid_shan"))
+            if not forbid_shan and (action == INDEX_RESP_SHAN) and (allow_bagua or self._consume_first_named_card(me, name="shan") or (me.hero == "zhaoyun" and self._consume_first_named_card(me, name="sha"))):
+                if allow_bagua and not any(card_name(cid)=="shan" for cid,_ in me.hand):
+                    # judge for bagua only if we didn't actually consume a shan
+                    judge = self._draw_judge_card()
+                    if judge is None:
+                        return
+                    if judge[1] not in (1,3):
+                        # fail -> treated as no shan, take damage below
+                        pass
+                    else:
+                        events.append({"type": "respond", "card": "shan", "via": "bagua", "agent": agent})
+                        state.response_pending = None
+                        return
+                # normal shan success
+                events.append({"type": "respond", "card": "shan", "agent": agent})
                 state.response_pending = None
                 return
             else:
                 attacker = state.response_pending.get("attacker")
+                # renwang: black sha no effect
+                sha_suit = state.response_pending.get("sha_suit")
+                if me.equip_armor_name == "renwang" and sha_suit in (0,2):
+                    events.append({"type": "armor_nullify", "armor": "renwang", "agent": agent})
+                    state.response_pending = None
+                    return
                 events.append({"type": "hit", "by": attacker, "agent": agent, "dmg": 1})
                 me.hp -= 1
-                # track last damage source
                 setattr(self.state.players[agent], "last_damage_by", attacker)
                 state.response_pending = None
                 if me.hp <= 0:
@@ -350,13 +432,36 @@ class SgsAecEnv(AECEnv):
                 return
 
     def _consume_first_named_card(self, me: PlayerState, name: str) -> bool:
-        # Scan hand indices and remove the first card with matching name
         for i, (cid, suit) in enumerate(me.hand):
             if card_name(cid) == name:
                 card = me.hand.pop(i)
                 self.state.discard_pile.append(card)
                 return True
         return False
+
+    def _consume_first_named_card_return(self, me: PlayerState, name: str):
+        for i, (cid, suit) in enumerate(me.hand):
+            if card_name(cid) == name:
+                card = me.hand.pop(i)
+                self.state.discard_pile.append(card)
+                return card
+        return None
+
+    def _consume_first_red_card_return(self, me: PlayerState):
+        for i, (cid, suit) in enumerate(me.hand):
+            if suit in (1,3):
+                card = me.hand.pop(i)
+                self.state.discard_pile.append(card)
+                return card
+        return None
+
+    def _consume_first_red_card(self, me: PlayerState) -> bool:
+        return self._consume_first_red_card_return(me) is not None
+
+    def _draw_judge_card(self):
+        if not self.state.deck:
+            return None
+        return self.state.deck.pop()
 
     def _update_all_infos(self, extra_events: Optional[List[Dict]] = None):
         for agent in self.agents:
@@ -481,7 +586,6 @@ class SgsAecEnv(AECEnv):
 
     def _do_guohe(self, attacker: str, defender: str, events: List[Dict]):
         dp = self.state.players[defender]
-        # remove one card: hand preferred, else judgement/equip ignored -> we pop from hand if exists
         if dp.hand:
             card = dp.hand.pop(0)
             self.state.discard_pile.append(card)

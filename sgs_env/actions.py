@@ -12,14 +12,14 @@ from typing import Optional
 # 16..23: PLAY_JUEDOU -> seat 0..7
 # 24..31: PLAY_GUOHE -> seat 0..7
 # 32..39: PLAY_SHUNSHOU -> seat 0..7
-# 40: PLAY_NANMAN (global)
-# 41: PLAY_WANJIAN (global)
-# 42..49: PLAY_LE / PLAY_BINGLIANG -> seat 0..7 (we will map LE to 42..49, BINGLIANG to 50..57? But keep <=63)
+# 40: PLAY_NANMAN
+# 41: PLAY_WANJIAN
 # 42..49: PLAY_LE -> seat 0..7
 # 50..57: PLAY_BINGLIANG -> seat 0..7
-# 58: PLAY_SHANDIAN (self)
-# 48..63 would be overlapping; so we move discard slots:
-# 58: SHANDIAN, 59..63: DISCARD slots 0..4 (5 slots). For MVP we limit discards selectable to first 5 slots.
+# 58: PLAY_SHANDIAN
+# 59..61: DISCARD slots 0..2
+# 62: EQUIP_WEAPON
+# 63: EQUIP_ARMOR
 
 INDEX_PASS = 0
 INDEX_SHA_BASE = 1
@@ -38,7 +38,9 @@ INDEX_LE_BASE = 42
 INDEX_BINGLIANG_BASE = 50
 INDEX_SHANDIAN = 58
 INDEX_DISCARD_BASE = 59
-NUM_DISCARD_SLOTS = 5
+NUM_DISCARD_SLOTS = 3
+INDEX_EQUIP_WEAPON = 62
+INDEX_EQUIP_ARMOR = 63
 
 
 def action_index_for_sha_to_seat(seat_index: int) -> int:

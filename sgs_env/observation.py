@@ -25,6 +25,8 @@ from .actions import (
     INDEX_LE_BASE,
     INDEX_BINGLIANG_BASE,
     INDEX_SHANDIAN,
+    INDEX_EQUIP_WEAPON,
+    INDEX_EQUIP_ARMOR,
 )
 
 
@@ -100,11 +102,16 @@ def build_legal_action_mask(state: GameState, agent: str) -> np.ndarray:
 
     if phase == Phase.PLAY:
         mask[INDEX_PASS] = 1
-        # SHA
-        if not state.used_sha_in_turn.get(agent, False) and any_card_named(state, me, "sha"):
+        # unlimited sha via hero/equip
+        unlimited_sha = state.players[agent].hero == "zhangfei" or state.players[agent].equip_weapon_name == "crossbow"
+        can_sha = any_card_named(state, me, "sha") or (state.players[agent].hero == "guanyu" and any_red_card(me)) or (state.players[agent].hero == "zhaoyun" and any_card_named(state, me, "shan"))
+        if (unlimited_sha or not state.used_sha_in_turn.get(agent, False)) and can_sha:
             for seat in range(NUM_SEAT_SLOTS):
                 target = state.agent_by_seat(seat)
                 if target and target != agent and state.players[target].alive:
+                    # kongcheng target immunity
+                    if state.players[target].hero == "zhugeliang" and len(state.players[target].hand) == 0:
+                        continue
                     if in_sha_range(state, agent, target):
                         mask[action_index_for_sha_to_seat(seat)] = 1
         # TAO
@@ -147,6 +154,11 @@ def build_legal_action_mask(state: GameState, agent: str) -> np.ndarray:
                     mask[action_index_for_targeted(INDEX_BINGLIANG_BASE, seat)] = 1
         if any_card_named(state, me, "shandian"):
             mask[INDEX_SHANDIAN] = 1
+        # Equip actions
+        if any_card_named(state, me, "crossbow"):
+            mask[INDEX_EQUIP_WEAPON] = 1
+        if any_card_named(state, me, "bagua") or any_card_named(state, me, "renwang") or any_card_named(state, me, "minus_horse") or any_card_named(state, me, "plus_horse"):
+            mask[INDEX_EQUIP_ARMOR] = 1
         return mask
 
     if phase == Phase.DISCARD:
@@ -169,6 +181,13 @@ def any_card_named(state: GameState, me: PlayerState, name: str) -> bool:
     return False
 
 
+def any_red_card(me: PlayerState) -> bool:
+    for _cid, suit in me.hand:
+        if suit in (1, 3):  # hearts/diamonds
+            return True
+    return False
+
+
 _CARD_ID_TO_NAME = {
     1: "sha",
     2: "shan",
@@ -182,6 +201,11 @@ _CARD_ID_TO_NAME = {
     10: "le",
     11: "bingliang",
     12: "shandian",
+    13: "crossbow",
+    14: "bagua",
+    15: "renwang",
+    16: "minus_horse",
+    17: "plus_horse",
 }
 
 

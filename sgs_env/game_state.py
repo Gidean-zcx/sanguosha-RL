@@ -16,7 +16,11 @@ class PlayerState:
     equip_weapon_range: int = 1
     equip_minus_horse: bool = False
     equip_plus_horse: bool = False
-    judgement_zone: List[int] = field(default_factory=list)  # delayed tool cards
+    judgement_zone: List[Tuple[int, int]] = field(default_factory=list)  # delayed tool cards
+    # new fields
+    hero: str = ""
+    equip_weapon_name: str = ""
+    equip_armor_name: str = ""
 
 
 @dataclass
