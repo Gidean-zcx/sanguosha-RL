@@ -91,6 +91,22 @@ def build_legal_action_mask(state: GameState, agent: str) -> np.ndarray:
         mask[INDEX_PASS] = 1
         return mask
 
+    # Active skill pending stages
+    if state.zhiheng_pending and state.zhiheng_pending.get("agent") == agent:
+        # can discard up to hand size; confirm to finish
+        for i in range(min(NUM_DISCARD_SLOTS, len(me.hand))):
+            mask[INDEX_DISCARD_BASE + i] = 1
+        mask[INDEX_CONFIRM] = 1
+        return mask
+    if state.qingnang_pending and state.qingnang_pending.get("agent") == agent:
+        # choose a target (any other alive)
+        for seat in range(NUM_SEAT_SLOTS):
+            target = state.agent_by_seat(seat)
+            if target and target != agent and state.players[target].alive:
+                mask[action_index_for_targeted(INDEX_JUEDOU_BASE, seat)] = 1
+        mask[INDEX_PASS] = 1
+        return mask
+
     phase = state.current_phase
     if phase in (Phase.PREPARE, Phase.JUDGEMENT, Phase.END):
         mask[INDEX_CONFIRM] = 1
@@ -102,6 +118,16 @@ def build_legal_action_mask(state: GameState, agent: str) -> np.ndarray:
 
     if phase == Phase.PLAY:
         mask[INDEX_PASS] = 1
+        # Active skills ready
+        if me.hero == "sunquan" and not state.used_zhiheng_in_turn.get(agent, False) and len(me.hand) > 0:
+            # entering zhiheng pending allows discards using discard slots, then confirm to draw equal
+            mask[INDEX_CONFIRM] = 1  # confirm to activate zhiheng start (handled in env)
+        if me.hero == "huatuo" and not state.used_qingnang_in_turn.get(agent, False):
+            # choose target via targeted base
+            for seat in range(NUM_SEAT_SLOTS):
+                target = state.agent_by_seat(seat)
+                if target and target != agent and state.players[target].alive:
+                    mask[action_index_for_targeted(INDEX_JUEDOU_BASE, seat)] = 1
         # unlimited sha via hero/equip
         unlimited_sha = state.players[agent].hero == "zhangfei" or state.players[agent].equip_weapon_name == "crossbow"
         can_sha = any_card_named(state, me, "sha") or (state.players[agent].hero == "guanyu" and any_red_card(me)) or (state.players[agent].hero == "zhaoyun" and any_card_named(state, me, "shan"))

@@ -165,6 +165,9 @@ class SgsAecEnv(AECEnv):
         state.turn_count = 1
         state.used_sha_in_turn = {a: False for a in self.agents}
         state.__dict__.setdefault("qinglong_used_in_turn", {a: False for a in self.agents})
+        state.__dict__.setdefault("used_zhiheng_in_turn", {a: False for a in self.agents})
+        state.__dict__.setdefault("used_qingnang_in_turn", {a: False for a in self.agents})
+        state.__dict__.setdefault("zhiheng_pending", None)
 
         # initial draw: 4 cards each
         for agent in state.agent_order:
@@ -209,8 +212,43 @@ class SgsAecEnv(AECEnv):
                 events.append({"type": "pass", "agent": agent})
                 state.current_phase = Phase.DISCARD
                 return
+            # ZHIHENG: confirm to start pending; then in pending, discards via slots and confirm to draw equal
+            if me.hero == "sunquan" and not state.used_zhiheng_in_turn.get(agent, False) and action == INDEX_CONFIRM and state.zhiheng_pending is None and len(me.hand) > 0:
+                state.zhiheng_pending = {"agent": agent, "discarded": 0}
+                events.append({"type": "skill_start", "name": "zhiheng", "agent": agent})
+                return
+            if state.zhiheng_pending and state.zhiheng_pending.get("agent") == agent:
+                slot = discard_slot_from_action_index(action)
+                if slot is not None and slot < len(me.hand):
+                    card = me.hand.pop(slot)
+                    state.discard_pile.append(card)
+                    state.zhiheng_pending["discarded"] += 1
+                    events.append({"type": "zhiheng_discard", "agent": agent})
+                    return
+                if action == INDEX_CONFIRM:
+                    cnt = int(state.zhiheng_pending.get("discarded", 0))
+                    if cnt > 0:
+                        self._draw_cards(state, agent, cnt)
+                        events.append({"type": "skill", "name": "zhiheng", "agent": agent, "draw": cnt})
+                    state.used_zhiheng_in_turn[agent] = True
+                    state.zhiheng_pending = None
+                    return
+            # QINGNANG: choose target to heal 1
+            if me.hero == "huatuo" and not state.used_qingnang_in_turn.get(agent, False):
+                tgt = seat_from_targeted(INDEX_JUEDOU_BASE, action)
+                if tgt is not None:
+                    target_agent = state.agent_by_seat(tgt)
+                    if target_agent and target_agent != agent and state.players[target_agent].alive:
+                        tp = state.players[target_agent]
+                        if tp.hp < tp.max_hp:
+                            tp.hp += 1
+                            state.used_qingnang_in_turn[agent] = True
+                            events.append({"type": "skill", "name": "qingnang", "from": agent, "to": target_agent, "heal": 1})
+                        else:
+                            events.append({"type": "noop", "reason": "target_full_hp"})
+                        return
             if action == INDEX_TAO:
-                if me.hp < me.max_hp and self._consume_first_named_card(me, name="tao"):
+                if me.hp < me.max_hp and self._consume_first_named_card_return(me, name="tao"):
                     me.hp = min(me.max_hp, me.hp + 1)
                     events.append({"type": "play", "card": "tao", "agent": agent})
                 else:
@@ -334,6 +372,8 @@ class SgsAecEnv(AECEnv):
             state.current_phase = Phase.PREPARE
             state.used_sha_in_turn[agent] = False
             state.qinglong_used_in_turn[agent] = False
+            state.used_zhiheng_in_turn[agent] = False
+            state.used_qingnang_in_turn[agent] = False
             state.current_agent_idx = (state.current_agent_idx + 1) % len(state.agent_order)
             if state.current_agent_idx == 0:
                 state.turn_count += 1

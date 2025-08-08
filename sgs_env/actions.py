@@ -20,6 +20,9 @@ from typing import Optional
 # 59..61: DISCARD slots 0..2
 # 62: EQUIP_WEAPON
 # 63: EQUIP_ARMOR
+# Active skills multiplexed via phases:
+# - ZHIHENG uses DISCARD slots in a separate pending stage
+# - QINGNANG uses SHA target seats (16..23 reused by targeted base with qingnang flag)
 
 INDEX_PASS = 0
 INDEX_SHA_BASE = 1

@@ -49,8 +49,13 @@ class GameState:
     turn_count: int = 0
     used_sha_in_turn: Dict[str, bool] = field(default_factory=dict)
     # pending states
-    response_pending: Optional[Dict] = None  # {type:'shan', attacker, defender}
+    response_pending: Optional[Dict] = None  # {type:'shan'/'wuxie'/..., ...}
     dying_pending: Optional[Dict] = None  # {agent}
+    # active skill states
+    zhiheng_pending: Optional[Dict] = None  # {count}
+    qingnang_pending: Optional[Dict] = None  # {stage:'target'}
+    used_zhiheng_in_turn: Dict[str, bool] = field(default_factory=dict)
+    used_qingnang_in_turn: Dict[str, bool] = field(default_factory=dict)
 
     def serialize_public(self) -> Dict:
         return {
