@@ -10,13 +10,28 @@ except Exception:  # pragma: no cover
     httpx = None  # lazy optional
 
 
-def _build_prompt(observation: Dict[str, Any], legal_indices: List[int]) -> str:
+def _history_to_text(history: Optional[List[Dict[str, Any]]], limit: int = 10) -> str:
+    if not history:
+        return "(none)"
+    lines: List[str] = []
+    for h in history[-limit:]:
+        agent = h.get("agent")
+        phase = h.get("phase")
+        events = h.get("events") or []
+        action = h.get("action")
+        evs = "; ".join([str(e) for e in events])
+        lines.append(f"agent={agent} phase={phase} action={action} events=[{evs}]")
+    return "\n".join(lines)
+
+
+def _build_prompt(observation: Dict[str, Any], legal_indices: List[int], history: Optional[List[Dict[str, Any]]] = None) -> str:
     return (
         "You are an agent playing Sanguosha. You must output exactly one integer that is a legal action index.\n"
         "Rules:\n"
         "- Action space is fixed-size; only actions with mask=1 are legal.\n"
         "- Output only the integer (no text).\n"
         "Observation (json):\n" + json.dumps(observation, ensure_ascii=False) + "\n"
+        "Recent steps (most recent last):\n" + _history_to_text(history) + "\n"
         "Legal indices: " + ",".join(map(str, legal_indices)) + "\n"
         "Your answer:"
     )
@@ -128,12 +143,12 @@ class LLMAdapter:
         except Exception:
             return None
 
-    def act(self, observation: Dict[str, Any], legal_mask) -> int:
+    def act(self, observation: Dict[str, Any], legal_mask, history: Optional[List[Dict[str, Any]]] = None) -> int:
         legal_indices = list(np.nonzero(legal_mask)[0])
         if not legal_indices:
             return 0
-        # Build prompt
-        prompt = _build_prompt(observation, legal_indices)
+        # Build prompt with history
+        prompt = _build_prompt(observation, legal_indices, history)
         # Route by provider
         providers = []
         if self.provider in ("auto", "openai"):

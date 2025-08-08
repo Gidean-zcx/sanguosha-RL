@@ -69,6 +69,10 @@ async def ws_headless(ws: WebSocket):
             "mask": info.get("legal_action_mask").tolist(),
             "events": info.get("events", []),
             "phase": info.get("observation_struct", {}).get("phase"),
+            "observation": info.get("observation_struct", {}),
+            "rewards": e.rewards,
+            "terminations": e.terminations,
+            "truncations": e.truncations,
         }})
         # auto random legal action
         import numpy as np
@@ -104,35 +108,53 @@ async def ws_game(ws: WebSocket, game_id: str):
         else:
             controllers[agent] = ("bot", RandomLegalBot(seed=room.seed + seat))
 
+    # recent history for LLM context
+    history: list[dict] = []
+
     step = 0
     while step < 200 and not (all(e.terminations.values()) or all(e.truncations.values())):
         agent = e.agent_selection
         _o, _r, _t, _tr, info = e.last()
-        await ws.send_json({
+        obs_struct = info.get("observation_struct")
+        msg = {
             "agent": agent,
             "info": {
                 "mask": info.get("legal_action_mask").tolist(),
                 "events": info.get("events", []),
-                "phase": info.get("observation_struct", {}).get("phase"),
+                "phase": obs_struct.get("phase") if isinstance(obs_struct, dict) else None,
+                "observation": obs_struct,
+                "rewards": e.rewards,
+                "terminations": e.terminations,
+                "truncations": e.truncations,
             },
-        })
+        }
+        await ws.send_json(msg)
         mask = info.get("legal_action_mask")
         ctrl_kind, ctrl_obj = controllers.get(agent, ("bot", RandomLegalBot(seed=0)))
         a: int | None = None
         # priority: human from WS, else LLM, else bot
         if ctrl_kind == "human":
             try:
-                msg = await asyncio.wait_for(ws.receive_json(), timeout=1.0)
-                a = int(msg.get("action", 0))
+                cli = await asyncio.wait_for(ws.receive_json(), timeout=1.0)
+                a = int(cli.get("action", 0))
             except Exception:
                 a = None
         if a is None and ctrl_kind == "llm":
             try:
-                a = int(ctrl_obj.act(info.get("observation_struct"), mask))
+                a = int(ctrl_obj.act(obs_struct, mask, history))
             except Exception:
                 a = None
         if a is None:
             a = int(RandomLegalBot(seed=room.seed + step).act(mask))
+        # record into history (limited fields)
+        history.append({
+            "agent": agent,
+            "phase": msg["info"]["phase"],
+            "events": msg["info"]["events"],
+            "action": int(a),
+        })
+        if len(history) > 32:
+            history = history[-32:]
         e.step(a)
         step += 1
     await ws.close()
