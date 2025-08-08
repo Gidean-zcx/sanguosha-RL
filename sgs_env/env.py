@@ -164,6 +164,7 @@ class SgsAecEnv(AECEnv):
         state.current_phase = Phase.PREPARE
         state.turn_count = 1
         state.used_sha_in_turn = {a: False for a in self.agents}
+        state.__dict__.setdefault("qinglong_used_in_turn", {a: False for a in self.agents})
 
         # initial draw: 4 cards each
         for agent in state.agent_order:
@@ -225,16 +226,23 @@ class SgsAecEnv(AECEnv):
                     and target_agent != agent
                     and (unlimited_sha or not state.used_sha_in_turn.get(agent, False))
                 ):
-                    # Determine if we can generate a Sha: real sha, wusheng red card, or longdan (shan as sha)
+                    # Determine if we can generate a Sha: real sha, wusheng red card, longdan (shan as sha), zhangba (two cards)
                     consumed = self._consume_first_named_card_return(me, name="sha")
                     used_source = "sha"
                     if consumed is None and me.hero == "guanyu":
-                        # use first red card as sha (wusheng)
-                        consumed = self._consume_first_red_card(me)
+                        consumed = self._consume_first_red_card_return(me)
                         used_source = "wusheng"
                     if consumed is None and me.hero == "zhaoyun":
                         consumed = self._consume_first_named_card_return(me, name="shan")
                         used_source = "longdan"
+                    if consumed is None and me.equip_weapon_name == "zhangba" and len(me.hand) >= 2:
+                        # use any two cards as sha
+                        c1 = me.hand.pop(0)
+                        c2 = me.hand.pop(0 if me.hand else 0)
+                        self.state.discard_pile.append(c1)
+                        self.state.discard_pile.append(c2)
+                        consumed = (0, 1)  # mark red suit to avoid renwang ignore; not strictly needed
+                        used_source = "zhangba"
                     if consumed is not None:
                         state.used_sha_in_turn[agent] = not unlimited_sha
                         sha_suit = consumed[1]
@@ -249,12 +257,15 @@ class SgsAecEnv(AECEnv):
                             if judge is not None:
                                 forbid_shan = judge[1] in (0, 2)  # black
                                 events.append({"type": "judge", "skill": "tieqi", "suit": judge[1]})
+                        # qinggang ignore armor
+                        ignore_armor = me.equip_weapon_name == "qinggang"
                         state.response_pending = {
                             "type": "shan",
                             "attacker": agent,
                             "defender": target_agent,
                             "sha_suit": sha_suit,
                             "forbid_shan": forbid_shan,
+                            "ignore_armor": ignore_armor,
                         }
                         events.append({
                             "type": "play",
@@ -322,6 +333,7 @@ class SgsAecEnv(AECEnv):
             # advance to next player's turn
             state.current_phase = Phase.PREPARE
             state.used_sha_in_turn[agent] = False
+            state.qinglong_used_in_turn[agent] = False
             state.current_agent_idx = (state.current_agent_idx + 1) % len(state.agent_order)
             if state.current_agent_idx == 0:
                 state.turn_count += 1
@@ -331,9 +343,9 @@ class SgsAecEnv(AECEnv):
         # Response handling regardless of main phases
         if state.response_pending and agent == state.response_pending.get("defender"):
             # bagua: allow RESP_SHAN even without shan
-            allow_bagua = me.equip_armor_name == "bagua"
+            allow_bagua = me.equip_armor_name == "bagua" and not state.response_pending.get("ignore_armor", False)
             forbid_shan = bool(state.response_pending.get("forbid_shan"))
-            if not forbid_shan and (action == INDEX_RESP_SHAN) and (allow_bagua or self._consume_first_named_card(me, name="shan") or (me.hero == "zhaoyun" and self._consume_first_named_card(me, name="sha"))):
+            if not forbid_shan and (action == INDEX_RESP_SHAN) and (allow_bagua or self._consume_first_named_card(self.state.players[agent], name="shan") or (me.hero == "zhaoyun" and self._consume_first_named_card(self.state.players[agent], name="sha"))):
                 if allow_bagua and not any(card_name(cid)=="shan" for cid,_ in me.hand):
                     # judge for bagua only if we didn't actually consume a shan
                     judge = self._draw_judge_card()
@@ -344,26 +356,35 @@ class SgsAecEnv(AECEnv):
                         pass
                     else:
                         events.append({"type": "respond", "card": "shan", "via": "bagua", "agent": agent})
+                        # Qinglong extra sha after dodge
+                        attacker = state.response_pending.get("attacker")
+                        self._maybe_qinglong_follow(attacker, agent, events)
                         state.response_pending = None
                         return
                 # normal shan success
                 events.append({"type": "respond", "card": "shan", "agent": agent})
+                # Guanshi axe: discard 2 to deal 1 damage anyway
+                attacker = state.response_pending.get("attacker")
+                if self.state.players[attacker].equip_weapon_name == "guanshi" and len(self.state.players[attacker].hand) >= 2:
+                    c1 = self.state.players[attacker].hand.pop(0)
+                    c2 = self.state.players[attacker].hand.pop(0)
+                    self.state.discard_pile.append(c1)
+                    self.state.discard_pile.append(c2)
+                    self._apply_hit_damage(attacker, agent, base_dmg=1, events=events, tag="guanshi_force")
+                # Qinglong extra sha after dodge
+                self._maybe_qinglong_follow(attacker, agent, events)
                 state.response_pending = None
                 return
             else:
                 attacker = state.response_pending.get("attacker")
                 # renwang: black sha no effect
                 sha_suit = state.response_pending.get("sha_suit")
-                if me.equip_armor_name == "renwang" and sha_suit in (0,2):
+                if me.equip_armor_name == "renwang" and sha_suit in (0,2) and not state.response_pending.get("ignore_armor", False):
                     events.append({"type": "armor_nullify", "armor": "renwang", "agent": agent})
                     state.response_pending = None
                     return
-                events.append({"type": "hit", "by": attacker, "agent": agent, "dmg": 1})
-                me.hp -= 1
-                setattr(self.state.players[agent], "last_damage_by", attacker)
+                self._apply_hit_damage(attacker, agent, base_dmg=1, events=events, tag="sha_hit")
                 state.response_pending = None
-                if me.hp <= 0:
-                    state.dying_pending = {"agent": agent}
                 return
 
         # Wuxie chain (simplified, single cancel offer sequentially)
@@ -691,3 +712,54 @@ class SgsAecEnv(AECEnv):
                 next_agent = state.agent_order[next_idx]
                 state.players[next_agent].judgement_zone.append((12, 0))
             state.discard_pile.append((judge[0], judge[1]))
+
+    def _apply_hit_damage(self, attacker: str, defender: str, base_dmg: int, events: List[Dict], tag: str):
+        ap = self.state.players[attacker]
+        dp = self.state.players[defender]
+        dmg = base_dmg
+        # tengjia: immune to normal sha damage
+        if dp.equip_armor_name == "tengjia" and tag.startswith("sha"):
+            dmg = 0
+        # guding: +1 dmg if defender no hand
+        if ap.equip_weapon_name == "guding" and len(dp.hand) == 0:
+            dmg += 1
+        # baiyin: cap >1 to 1
+        if dp.equip_armor_name == "baiyin" and dmg > 1:
+            dmg = 1
+        # apply
+        if dmg > 0:
+            dp.hp -= dmg
+            events.append({"type": "hit", "by": attacker, "agent": defender, "dmg": dmg, "tag": tag})
+            setattr(dp, "last_damage_by", attacker)
+            # qilin: remove horse
+            if ap.equip_weapon_name == "qilin":
+                if dp.equip_plus_horse:
+                    dp.equip_plus_horse = False
+                    events.append({"type": "qilin_remove_horse", "which": "+1", "agent": defender})
+                elif dp.equip_minus_horse:
+                    dp.equip_minus_horse = False
+                    events.append({"type": "qilin_remove_horse", "which": "-1", "agent": defender})
+            # hanbing: discard 1 from defender hand
+            if ap.equip_weapon_name == "hanbing" and dp.hand:
+                card = dp.hand.pop(0)
+                self.state.discard_pile.append(card)
+                events.append({"type": "hanbing_discard", "agent": defender})
+            if dp.hp <= 0:
+                self.state.dying_pending = {"agent": defender}
+        else:
+            events.append({"type": "no_effect", "reason": "immune_or_zero", "agent": defender})
+
+    def _maybe_qinglong_follow(self, attacker: str, defender: str, events: List[Dict]):
+        ap = self.state.players[attacker]
+        if ap.equip_weapon_name == "qinglong" and not self.state.qinglong_used_in_turn.get(attacker, False):
+            # trigger extra sha immediately
+            self.state.qinglong_used_in_turn[attacker] = True
+            self.state.response_pending = {
+                "type": "shan",
+                "attacker": attacker,
+                "defender": defender,
+                "sha_suit": 1,  # treat as red for safety
+                "forbid_shan": False,
+                "ignore_armor": False,
+            }
+            events.append({"type": "qinglong_extra_sha", "attacker": attacker, "defender": defender})
