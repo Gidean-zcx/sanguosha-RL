@@ -505,6 +505,16 @@ class SgsAecEnv(AECEnv):
                 return
 
     def _consume_first_named_card(self, me: PlayerState, name: str) -> bool:
+        # prefer user-selected card if matches
+        pref = self.state.preferred_card.get(self.agent_selection)
+        if pref is not None:
+            for i, (cid, suit) in enumerate(me.hand):
+                if (cid, suit) == tuple(pref) and card_name(cid) == name:
+                    card = me.hand.pop(i)
+                    self.state.discard_pile.append(card)
+                    self.state.preferred_card[self.agent_selection] = None
+                    return True
+        # fallback first match
         for i, (cid, suit) in enumerate(me.hand):
             if card_name(cid) == name:
                 card = me.hand.pop(i)
@@ -513,6 +523,16 @@ class SgsAecEnv(AECEnv):
         return False
 
     def _consume_first_named_card_return(self, me: PlayerState, name: str):
+        # prefer user-selected card if matches
+        pref = self.state.preferred_card.get(self.agent_selection)
+        if pref is not None:
+            for i, (cid, suit) in enumerate(me.hand):
+                if (cid, suit) == tuple(pref) and card_name(cid) == name:
+                    card = me.hand.pop(i)
+                    self.state.discard_pile.append(card)
+                    self.state.preferred_card[self.agent_selection] = None
+                    return card
+        # fallback first match
         for i, (cid, suit) in enumerate(me.hand):
             if card_name(cid) == name:
                 card = me.hand.pop(i)

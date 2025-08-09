@@ -56,6 +56,8 @@ class GameState:
     qingnang_pending: Optional[Dict] = None  # {stage:'target'}
     used_zhiheng_in_turn: Dict[str, bool] = field(default_factory=dict)
     used_qingnang_in_turn: Dict[str, bool] = field(default_factory=dict)
+    # UI hint: preferred card to consume per agent (cid,suit)
+    preferred_card: Dict[str, Optional[Tuple[int, int]]] = field(default_factory=dict)
 
     def serialize_public(self) -> Dict:
         return {

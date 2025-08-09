@@ -189,15 +189,24 @@ async def ws_game(ws: WebSocket, game_id: str, seat: int = Query(-1, description
         mask = info.get("legal_action_mask")
         ctrl_kind, ctrl_obj = controllers.get(agent, ("bot", RandomLegalBot(seed=0)))
         a: int | None = None
-        # priority: human for matching seat, else bot
+        preferred = None
+        # priority: human for matching seat, else LLM, else bot
         if ctrl_kind == "human":
             try:
                 cli = await asyncio.wait_for(ws.receive_json(), timeout=1.0)
                 a = int(cli.get("action", 0))
+                preferred = cli.get("card")  # optional selected concrete card (cid,suit)
+            except Exception:
+                a = None
+        if a is None and ctrl_kind == "llm":
+            try:
+                a = int(ctrl_obj.act(obs_struct, mask, history))
             except Exception:
                 a = None
         if a is None:
             a = int(RandomLegalBot(seed=room.seed + step).act(mask))
+        # set preferred card for this agent if provided
+        st.preferred_card[agent] = tuple(preferred) if (isinstance(preferred, list) and len(preferred) == 2) else None
         # record into history (limited fields)
         history.append({
             "agent": agent,
