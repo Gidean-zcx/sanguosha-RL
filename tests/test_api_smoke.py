@@ -4,13 +4,8 @@ from fastapi.testclient import TestClient
 from api.main import app
 
 
-def test_create_room_and_headless_smoke():
+def test_headless_run():
     c = TestClient(app)
-    r = c.post("/rooms", json={"seed": 0, "num_players": 4, "record": False})
-    assert r.status_code == 200
-    game_id = r.json()["game_id"]
-    assert isinstance(game_id, str)
-
     r = c.post("/headless/run", json={"seed": 0, "num_players": 4, "record": False, "num_episodes": 2, "parallelism": 2, "max_steps": 10})
     assert r.status_code == 200
     data = r.json()
@@ -22,6 +17,12 @@ def test_create_and_join_and_meta():
     r = c.post("/rooms", json={"seed": 0, "num_players": 4, "record": True})
     assert r.status_code == 200
     gid = r.json()["game_id"]
+    # list rooms
+    lr = c.get("/rooms")
+    assert lr.status_code == 200 and gid in lr.json().get("rooms", [])
+    # room meta
+    rm = c.get(f"/rooms/{gid}")
+    assert rm.status_code == 200 and rm.json().get("game_id") == gid
     r2 = c.post("/rooms/join", json={"game_id": gid, "seat": 0, "kind": "human"})
     assert r2.status_code == 200 and r2.json()["ok"]
     r3 = c.get("/meta/cards")
