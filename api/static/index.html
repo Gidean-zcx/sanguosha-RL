@@ -13,7 +13,8 @@
     pre { background: #f7f7f7; padding: 8px; border-radius: 6px; max-height: 240px; overflow: auto; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .card { padding: 8px; border: 1px solid #e5e5e5; border-radius: 8px; }
-    .pill { padding: 2px 6px; background: #eef; border-radius: 10px; margin-right: 4px; display: inline-block; }
+    .pill { padding: 2px 6px; background: #eef; border-radius: 10px; margin-right: 4px; display: inline-block; cursor: pointer; }
+    .pill.sel { background: #d8f4ff; border: 1px solid #6cc; }
     ul { padding-left: 18px; }
   </style>
 </head>
@@ -38,6 +39,7 @@
     <div class="card">
       <div><b>我的手牌</b>:</div>
       <div id="hand"></div>
+      <div style="margin-top:6px"><b>已选牌</b>: <span id="picked">(无)</span></div>
       <div style="margin-top:6px"><b>装备</b>: <span id="equip"></span></div>
       <div style="margin-top:6px"><b>判定区</b>: <span id="judge"></span></div>
       <div style="margin-top:6px"><b>事件</b>:</div>
@@ -61,6 +63,15 @@ el('create').onclick = async ()=>{
 };
 
 let ws = null;
+let pickedCard = null; // [cid, suit]
+
+function sendAction(idx){
+  if(!ws || ws.readyState!==1) return;
+  const payload = { action: idx };
+  if(pickedCard && Array.isArray(pickedCard) && pickedCard.length===2){ payload.card = pickedCard; }
+  ws.send(JSON.stringify(payload));
+}
+
 function renderMask(mask){
   const c = el('mask'); c.innerHTML = '';
   if(!mask) return;
@@ -69,7 +80,7 @@ function renderMask(mask){
     b.textContent = i;
     b.className = 'btn';
     b.disabled = !v;
-    b.onclick = ()=>{ if(ws && ws.readyState===1){ ws.send(JSON.stringify({action:i})); } };
+    b.onclick = ()=> sendAction(i);
     c.appendChild(b);
   });
 }
@@ -98,13 +109,24 @@ function renderPublic(obs){
   });
 }
 
+function selectCard(node, card){
+  pickedCard = card;
+  el('picked').textContent = `${CARDNAMES[card[0]]||('#'+card[0])}`;
+  // highlight
+  const pills = el('hand').querySelectorAll('.pill');
+  pills.forEach(p=>p.classList.remove('sel'));
+  node.classList.add('sel');
+}
+
 function renderSelf(obs){
   const me = obs && obs.self ? obs.self : null;
   const h = el('hand'); h.innerHTML='';
   if(me && Array.isArray(me.hand)){
     me.hand.forEach(([cid,suit])=>{
       const n = CARDNAMES[cid] || `#${cid}`;
-      const s = document.createElement('span'); s.className='pill'; s.textContent = `${n}`; h.appendChild(s);
+      const s = document.createElement('span'); s.className='pill'; s.textContent = `${n}`;
+      s.onclick = ()=> selectCard(s, [cid, suit]);
+      h.appendChild(s);
     });
   }
   const eq = el('equip');
@@ -115,8 +137,25 @@ function renderSelf(obs){
   }
 }
 
+function prettyEvent(e){
+  try{
+    switch(e.type){
+      case 'play': return `出牌: ${e.agent} 用 ${e.card} ${e.target?('→ '+e.target):''}`;
+      case 'respond': return `响应: ${e.agent} 打出 ${e.card} 用于 ${e.to}`;
+      case 'aoe_hit': return `群体伤害: ${e.agent} 受到 ${e.spell} 伤害 ${e.dmg}`;
+      case 'rescue': return `救援: ${e.agent} 使用 桃`;
+      case 'death': return `阵亡: ${e.agent}`;
+      case 'reward': return `奖励: ${e.to} ${e.what}`;
+      case 'penalty': return `惩罚: ${e.to} ${e.what}`;
+      case 'game_over': return `游戏结束: ${e.reason}`;
+      default: return JSON.stringify(e);
+    }
+  }catch{ return JSON.stringify(e); }
+}
+
 el('connect').onclick = ()=>{
   if(ws){ try{ ws.close(); }catch(e){} }
+  pickedCard = null; el('picked').textContent='(无)';
   const gid = el('game_id').value.trim();
   const seat = parseInt(el('seat').value,10);
   const qs = isNaN(seat) ? '' : `?seat=${seat}`;
@@ -133,7 +172,8 @@ el('connect').onclick = ()=>{
     renderTargets(msg.info.targets);
     renderPublic(msg.info.observation||{});
     renderSelf(msg.info.observation||{});
-    log(msg.info.events||[]);
+    const evs = msg.info.events||[];
+    if(evs && evs.length){ evs.forEach(e=> log(prettyEvent(e))); }
   };
 };
 </script>
