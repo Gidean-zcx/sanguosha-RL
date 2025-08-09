@@ -51,6 +51,17 @@ def cards_meta():
     return JSONResponse({"card_id_to_name": CARD_ID_TO_NAME})
 
 
+@app.get("/rooms")
+def list_rooms():
+    return {"rooms": list(rc.rooms.keys())}
+
+
+@app.get("/rooms/{game_id}")
+def room_meta(game_id: str):
+    room = rc.get_room(game_id)
+    return {"game_id": game_id, "seed": room.seed, "num_players": room.num_players, "record": room.record, "seats": room.seats}
+
+
 @app.post("/rooms")
 def create_room(req: CreateRoomReq):
     room_id = rc.create_room(seed=req.seed, num_players=req.num_players, record=req.record)
