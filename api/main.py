@@ -125,13 +125,23 @@ async def ws_game(ws: WebSocket, game_id: str, seat: int = Query(-1, description
     from sgs_env import env as make_env
     e = make_env(seed=room.seed, num_players=room.num_players)
     e.reset(seed=room.seed)
-    # Build controllers per seat (default bot). If seat>=0 -> human controller for that seat
+    # Build controllers per seat: seat param controls that seat; others follow room.seats config (default bot)
     agents = list(e.agents)
     seat_of_agent = {agent: e.unwrapped.state.players[agent].seat for agent in agents}
     controllers: dict[str, tuple[str, object]] = {}
     for agent in agents:
         s = seat_of_agent[agent]
         if seat >= 0 and s == seat:
+            controllers[agent] = ("human", None)
+            continue
+        cfg = room.seats.get(s, {"kind": "bot"})
+        kind = (cfg.get("kind") or "bot").lower()
+        if kind == "llm":
+            prov = cfg.get("provider") or "auto"
+            model = cfg.get("model") or None
+            controllers[agent] = ("llm", LLMAdapter(provider=prov, model=model, seed=room.seed + s))
+        elif kind == "human":
+            # if no controlling connection for this seat, will fallback to bot upon timeout
             controllers[agent] = ("human", None)
         else:
             controllers[agent] = ("bot", RandomLegalBot(seed=room.seed + s))
