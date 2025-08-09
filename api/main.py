@@ -62,6 +62,34 @@ def room_meta(game_id: str):
     return {"game_id": game_id, "seed": room.seed, "num_players": room.num_players, "record": room.record, "seats": room.seats}
 
 
+@app.get("/replays")
+def list_replay_dates():
+    root = "replays"
+    if not os.path.isdir(root):
+        return {"dates": []}
+    dates = [d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))]
+    dates.sort()
+    return {"dates": dates}
+
+
+@app.get("/replays/{date}/files")
+def list_replay_files(date: str):
+    root = os.path.join("replays", date)
+    if not os.path.isdir(root):
+        return {"files": []}
+    files = [f for f in os.listdir(root) if os.path.isfile(os.path.join(root, f))]
+    files.sort()
+    return {"files": files}
+
+
+@app.get("/replays/{date}/download")
+def download_replay(date: str, file: str = Query(..., description="file name under date dir")):
+    path = os.path.join("replays", date, file)
+    if not os.path.isfile(path):
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return FileResponse(path)
+
+
 @app.post("/rooms")
 def create_room(req: CreateRoomReq):
     room_id = rc.create_room(seed=req.seed, num_players=req.num_players, record=req.record)
